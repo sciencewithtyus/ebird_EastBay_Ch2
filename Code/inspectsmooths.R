@@ -43,8 +43,7 @@ gam_mod <- gam(num_migr_sp ~ s(medincome_mean) +
 
 #scatter plots (data only)
 ggplot() + 
-  geom_point(data = ebird_scaled, mapping = aes(x = medincome_mean, y = num_migr_sp)) +
-  theme_bw()
+  geom_point(data = ebird_scaled, mapping = aes(x = medincome_mean, y = num_bird_obvs)) + theme_bw()
 
 ggplot() + 
   geom_point(data = ebird_scaled, mapping = aes(x = housing_density_mean, y = num_migr_sp)) +
@@ -69,7 +68,7 @@ span_covariates <- data.frame(
 )
 
 ggplot() +
-  geom_point(data = ebird_scaled, mapping = aes(x = medincome_mean, y = num_migr_sp), color = "forestgreen") +
+  geom_point(data = ebird_scaled, mapping = aes(x = medincome_mean, y = num_bird_obvs), color = "forestgreen") +
   geom_line(data = data.frame(a = span_covariates$a,
                               y = predict(gam_mod, #we just want to predict
                                           #values of y for the whole space of a,

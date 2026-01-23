@@ -195,66 +195,6 @@ uwin_map <- ggmap(uwin_big) +
   print(uwin_map + ggtitle("East Bay UWIN Camera Monitoring Sites")) # color shows up now! Probably because the zones are character values
 ```
 
-## Study Area
-```{r loading and visualizing UWIN sites and other landscape elements}
-# try to create shapefile or sf object of the uwin sites in the East Bay, I need simple features geometry column in the data
-uwin_sf <- st_read("~/Desktop/Meso_Study/eb_shapefiles/uwineastbay/UWIN_East_Bay.shp")
-st_geometry_type(uwin_sf) # we need to view the geometric type for the shapefile, they are all points
-# now we look at the CRS for the shapefile we have
-st_crs(uwin_sf) # WGS84 or World Geodetic system 1984 which is concordant with California, NAD83 might be better?
-# now we can find the extent of our points to understand their bounding area
-st_bbox(uwin_sf) # bounding box looks good so now we can move forward
-
-# Let's try to visualize the points we have
-ggplot() +
-  geom_sf(data = uwin_sf, size = 1.5, color = "darkgreen", fill = NA) +
-  ggtitle("East Bay Uwin Points") +
-  coord_sf()
-# we also need to upload shapefiles for our study area to layer over more details, load in the east bay outline
-eb_outline <- st_read("~/Desktop/Meso_Study/eb_shapefiles/Bay_Area_Counties/bay_area_counties.shp")
-st_crs(eb_outline) # our reference system looks good and is correlative to California, WGS84
-# now lets subset for the counties we are interested in removing the others we dont want
-eb_outline <- subset(eb_outline, county == c("Alameda", "Contra Costa"))
-
-# fix the crs for the uwin cameras east bay [plot for the study area]
-uwin_outline <- st_transform(eb_outline, crs = st_crs(uwin_sf))
-
-# now we need to visualize the county outlines
-uwinmap1 <- ggplot() +
-  geom_sf(data = uwin_outline, size = 1, color = "black", fill = "lightgray") +
-  geom_sf(data = uwin_sf, size = 1.5, color = "forestgreen") +
-  ggtitle("UWIN Sites in the East Bay Region") +
-  coord_sf(xlim = c(-122.5, -122.15), ylim = c(37.7, 38.05), expand = TRUE) + 
-  theme_minimal_grid() # this map looks great! How can we improve it?
-
- # we need california as the inset map, adjust the crs the layers
-uwin_cali <- st_transform(cali_sf, crs = st_crs(uwin_sf))
-uwin_counties <- st_transform(counties_sf, crs = st_crs(uwin_sf))
-
-# try to visualize it now
-uwinmap2 <- ggplot() + 
-    geom_sf(data = uwin_cali, color = NA, lwd = 0.5, fill = "lightgray") +
-    geom_sf(data = uwin_counties, color = "black", lwd = 0.5, fill = NA) +
-    geom_sf(data = uwin_outline, color = "red", lwd = 0.4 , fill = NA) +
-    theme_void() +
-    theme(panel.background = element_rect(fill = NULL))
-
-# now we finally draw the inset map for the uwin sites
-uwinsetmap <- ggdraw() +
-  draw_plot(uwinmap1) +
-  draw_plot(uwinmap2, x = 0.24, y = 0.04, width = 0.34, height = 0.34)
-
-# see if the plot looks okay
-print(uwinsetmap)
-
-# lets save the sf files for Diego as csv files for him to use
-write.csv(uwin_sf, file = "~/Desktop/Meso_Study/ch2aviancats/data/uwin_sf.csv")
-write.csv(eb_outline, file = "~/Desktop/Meso_Study/ch2aviancats/data/eb_outline.csv")
-ggsave(filename = "uwineastbaymap.jpeg", plot = uwinsetmap, width = 12, height = 8, dpi = 500) # looks good!
-
-# now we need to try and apply some buffers around our uwin sites!
-
-```
 # Census data
 ```{r creating sf buffer points and extracting covariates}
 library(tmap)
@@ -296,12 +236,24 @@ pop_housing_density <- contra_alameda_vars %>%
    housing_density = as.numeric(housingE / area_sqkm))
 # should be able to extract this normally below
 
+# try adding in the population density and housing density in the main census sf
+contra_alameda_vars <- contra_alameda_vars %>%
+  mutate(
+    area_sqkm = st_area(geometry) / 1e6,
+    pop_density = as.numeric(popE / area_sqkm),
+    housing_density = as.numeric(housingE / area_sqkm)) %>%
+  dplyr::select(-area_sqkm) %>%
+  relocate(pop_density, .before = "popE") %>%
+  relocate(housing_density, .before = "housingE") %>%
+  mutate(across(c('pop_density', 'housing_density'), round, 2)) # looks good
+
 glimpse(contra_alameda_vars) # now we can take a look at our new sf object, everything is merged together now
 
 # change the CRS for the contra costa and alameda sf object into WGS83, perfect this works!
 contra_alameda_vars <- st_transform(contra_alameda_vars, crs = st_crs(grid_summary))
 
 plot(contra_alameda_vars["medincomeE"]) # this gives us an income estimate for contra costa and alameda
+plot(contra_alameda_vars["popE"])
 ```
 
 # eBird/Avonet
@@ -503,7 +455,6 @@ ebird_summary_table <- summary(summary_by_grid)
 ebird_summary_table %>%
   kable() %>%
   kable_styling() # would need to pull the stats variables as column
-  
 
 head(summary_by_grid) # the table looks great now! huzahh! updated 08/06/25
 # remove the pres_grid if needed
@@ -519,120 +470,220 @@ grid_summary <- grid_eb %>%
 rm(grid_eb)
 # I have same number of obs as the rows of grid df
 
-#### Step 4: Visualize the grid output of the presence dataset ####
+### -- -- -- -- INTEGRATING URBAN BLOCK DATA -- -- -- -- ###
+#### Loading in the files that Diego gave me with adjusted block group data ####
+# okay we need to load in the files using st_read and see the file structure
+# lets pull in the urban area census block group with variables
+urban_block <- st_read("~/Desktop/Meso_Study/ch2aviancats/data/bg_covs_eastbay_ua_only_all_socioeco_ebird_anno.gpkg") # great this worked and it's in WGS 84 CRS format
+
+# lets look at the file structure and framework
+str(urban_block)
+glimpse(urban_block) # okay this looks great and I should be able to run models immediately
+
+# lets try to visualize the block group information with some of the variables
+plot(urban_block["total_pop"]) # the structure looks awesome here
+plot(urban_block[c("mean_species", "mean_migrant", "med_hh_income", "mean_records")])
+
+# the file looks great but now we need to load in the full census block group data in case we need to add in more variables
+full_cbg <- st_read("~/Desktop/Meso_Study/ch2aviancats/data/cbg_all_socioeco_ebird_anno.gpkg")
+
+# take a look at the file structure and see what we can adjust
+str(full_cbg) # this hold everything and is not constrained to urban areas only
+plot(full_cbg["total_pop"])
+
+# total for the full_cb
+full_cbg %>% 
+  summarise(total_obs = sum(cbg_n_records, na.rm =TRUE)) # 6.3 million
+
+# need to make sure that the variables are in numerical format
+urban_block <- urban_block %>% 
+  dplyr::mutate(c(,3:30), as.numeric)
+
+# get the total sum of bird observations and other columns
+urban_block %>% 
+  group_by(GEOID) %>% 
+  summarise( 
+    total_obs = sum(cbg_n_records, na.rm = TRUE),
+    total_resident_species = sum(cbg_species_richness, na.rm = TRUE),
+    total_migrant_species = sum(cbg_migrant_species_richness, na.rm = TRUE),
+    total_migrant_obs = sum(cbg_n_records_migrant, na.rm = TRUE),
+    total_checklists = sum(cbg_n_checklists, na.rm = TRUE))
+
+# 5.1 million or 5,197,453 for total birds observed
+
+# now we need to scale the variables and run prelim models again with the new structure
+urban_scaled <- urban_block %>%
+    scale(urban_block[,3:30], scale = TRUE) # need to fix the double coercion
+
+# save the block group data with the added traffic volume to incorporate into chapter 3
+st_write(urban_block, "~/Desktop/Meso_Study/ch3urbancat_eBirdtrends/urban_block.gpkg")
+# perfect this works
+
+# building out a table for the summary statistics ebird data
+list(colnames(urban_block))
+
+summary(urban_block[,25:29]) # should give me the summaries of these columns
+
+# lets make the same summary statistics table for chapter 2
+# lets pull the variables we need
+variable_pull <- colnames(urban_block[,24:31])
+variable_pull <- variable_pull[c(-2,-3,-9)]
+# Function to compute stats for a single variable
+get_stats <- function(x) {
+  c(
+    total  = sum(x, na.rm = TRUE),
+    mean   = mean(x, na.rm = TRUE),
+    median = median(x, na.rm = TRUE),
+    sd     = sd(x, na.rm = TRUE),
+    max    = max(x, na.rm = TRUE),
+    min    = min(x, na.rm = TRUE)
+  )
+}
+
+# Apply the function to each variable
+ebird_summary_stats <- urban_block %>% st_drop_geometry() %>%
+  dplyr::select(all_of(variable_pull)) %>%
+  map_df(get_stats, .id = "variable") %>%
+  dplyr::select(variable, total, mean, median, sd, max, min)
+
+n_distinct(urban_block$GEOID) # 1798 distinct GEOID rows
+    
+# rename the column containing the variables
+ebird_summary_stats <- ebird_summary_stats %>%
+  mutate(variable = case_when(
+           variable == "cbg_n_checklists" ~ "eBird checklists",
+           variable == "cbg_n_records" ~ "eBird species records",
+           variable == "cbg_species_richness" ~ "species richness",
+           variable == "cbg_n_records_migrant" ~ "eBird migrant records",
+           variable == "cbg_migrant_species_richness" ~ "migratory species richness",
+           variable == "spring_migration" ~ "migration stopover density",
+           TRUE ~ variable
+           )) %>%
+        mutate(across(2:7, ~round(.x, digits = 2))) # looks great and will use for paper
+
+print(ebird_summary_stats) # this looks great
+
+# now we save the csv file for the data table to add to the paper
+write.csv(ebird_summary_stats, file = "~/Desktop/Meso_Study/ch2_ebird_eastbay/R_tables/ebird_summary_stats.csv", row.names = FALSE) # updated 01/21/26
+
+# try to calculate species and migrant richness
+
+urban_block %>% st_drop_geometry() %>%
+  total_species = sum(cbg_n_records[n_distinct = 'NAME'])
+
+#### Step 4: Visualize the block group output of the updated ebird urban only dataset ####
+
+# Task: make map that stitches all the maps together for chapter 2!
 
 # 1. Number of checklists map, this looks great especially zoomed in!
-ggplot() +
-    geom_sf(data = eb_outline, color = "black", fill = "lightgrey", size = 1) +
-    geom_sf(data = summary_by_grid, aes(color = num_checklists), size = 1.5) +
-    scale_color_viridis_c(option = "turbo", name = "Number of Checklists") +
-    coord_sf(xlim = c(-122.4, -121.5), ylim = c(37.5, 38.1), expand = TRUE) +
-    theme_minimal() +
-    labs(title = "Number of Bird Survey Checklists in the East Bay Region",
-         x = "Longitude", y = "Latitude")
-
-# make a rasterized image of this below
-ggplot() +
-  geom_sf(data = eb_outline, color = "black", fill = "lightgray", size = 1) +
-  geom_sf(data = grid_summary, aes(fill = num_checklists), color = NA) +
-  scale_fill_viridis_c(option = "turbo", name = "Number of Checklists", limits = c(0, 500)) +
-  coord_sf(xlim = c(-122.5, -121.5), ylim = c(37.45, 38.1), expand = TRUE) +
-  theme_minimal() +
-  labs(title = "Number of Bird Survey Checklists in the East Bay", x = "Longitude", y = "Latitude") +
-  theme(
-    plot.title = element_text(size = 14, face = "bold"),
-    axis.title = element_text(size = 12),
-    legend.title = element_text(size = 12),
-    legend.text = element_text(size = 10))
+check_map <- ggplot() +
+    geom_sf(data = urban_block, aes(fill = n_checklists)) +
+    scale_fill_viridis_c(option = "turbo", name = "eBird Checklists") +
+    coord_sf(xlim = c(-122.4, -121.6), ylim = c(37.5, 38.1), expand = TRUE) +
+    theme_grey() +
+    theme(legend.position = "inside",
+          legend.justification = c(0, 0),
+          legend.title = element_text(size = 10),
+          legend.text = element_text(size = 10),
+          legend.background = element_rect(fill = alpha("white", 0.7)))
+  # looks awesome, might adjust limits
 
 print(check_map)
 
-ggsave(filename = "ch2aviancats/R_figures/ebirdchecklistsmap.jpeg", plot = check_map, 
-       width = 8, height = 8, dpi = 500)
+ggsave(filename = "~/Desktop/Meso_Study/ch2aviancats/R_figures/ebirdchecklistsmap.jpeg", plot = check_map, width = 8, height = 8, dpi = 600)
             
-# 2. Number of data points map, this also looks great
-ggplot() +
-    geom_sf(data = uwin_outline, color = "black", fill = "lightgrey", size = 1) +
-    geom_sf(data = summary_by_grid, aes(color = num_datapoints), size = 1.5) +
-    scale_color_viridis_c(option = "viridis", name = "Number of Data Points") +
-    coord_sf(xlim = c(-122.5, -121.5), ylim = c(37.5, 38.1), expand = TRUE) +
-    theme_minimal() +
-    labs(title = "Number of eBird Data Points in the East Bay Region",
-         x = "Longitude", y = "Latitude")
+# 2. Number of migratory species in the east bay, this also looks great
+migrant_rich_map <- ggplot() +
+    geom_sf(data = urban_block, aes(fill = cbg_migrant_species_richness)) +
+    scale_fill_viridis_c(option = "turbo", name = "Migratory Species Richness") +
+    coord_sf(xlim = c(-122.67, -121.6), ylim = c(37.5, 38.1), expand = TRUE) +
+    theme_grey() +
+  theme(plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    legend.position = "inside",
+    legend.justification = c(0, 0),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    legend.background = element_rect(fill = alpha("white", 0.7)))
 
-# make raster visual of this data
-ggplot() +
-  geom_sf(data = eb_outline, color = "black", fill = "lightgray", size = 1) +
-  geom_sf(data = grid_summary, aes(fill = num_datapoints), color = NA) +
-  scale_fill_viridis_c(option = "viridis", name = "Number of Data Points", limits = c(0, 16000)) +
-  coord_sf(xlim = c(-122.5, -121.5), ylim = c(37.45, 38.1), expand = TRUE) +
-  theme_minimal() +
-  labs(title = "Number of eBird Data Points in the East Bay Region", x = "Longitude", y = "Latitude") +
+print(migrant_rich_map)
+
+ggsave(filename = "~/Desktop/Meso_Study/ch2aviancats/R_figures/migrantrichnessmap.jpeg", plot = migrant_rich_map, width = 8, height = 8, dpi = 600)
+
+# 3. Number of observed bird species map, make sure to set the font size
+sprich_map <- ggplot() +
+  geom_sf(data = urban_block, aes(fill = cbg_species_richness)) +
+  scale_fill_viridis_c(option = "turbo", name = "Species Richness") +
+  coord_sf(xlim = c(-122.42, -121.6), ylim = c(37.45, 38.1), expand = TRUE) +
+  theme_grey() +
   theme(
     plot.title = element_text(size = 14, face = "bold"),
     axis.title = element_text(size = 12),
-    legend.title = element_text(size = 12),
-    legend.text = element_text(size = 10))
-
-print(datapoint_map)
-
-ggsave(filename = "ch2aviancats/R_figures/datapointsmap.jpeg", plot = datapoint_map,
-       width = 8, height = 8, dpi = 500)
-
-# 3. Species diversity map, make sure to set the fontsize
-ggplot() +
-  geom_sf(data = eb_outline, color = "black", fill = "lightgray", size = 1) +
-  geom_sf(data = grid_summary, aes(fill = unique_species), color = NA) +
-  scale_fill_viridis_c(option = "plasma", name = "Species Richness Scale", limits = c(0, 300)) +
-  coord_sf(xlim = c(-122.5, -121.5), ylim = c(37.45, 38.1), expand = TRUE) +
-  theme_minimal() +
-  labs(title = "Unique Number of Birds in the East Bay", x = "Longitude", y = "Latitude") +
-  theme(
-    plot.title = element_text(size = 14, face = "bold"),
-    axis.title = element_text(size = 12),
-    legend.title = element_text(size = 12),
-    legend.text = element_text(size = 10))
+    legend.position = "inside",
+    legend.justification = c(0, 0),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    legend.background = element_rect(fill = alpha("white", 0.7))) # this looks awesome
 
 print(sprich_map)
 
-ggsave(filename = "ch2aviancats/R_figures/species_richnessmap.jpeg", plot = sprich_map,
-       width = 8, height = 8, dpi = 600)
+ggsave(filename = "~/Desktop/Meso_Study/ch2aviancats/R_figures/species_richnessmap.jpeg", plot = sprich_map, width = 8, height = 8, dpi = 600)
 
-# 4. number of bird observations map
-  ggplot() +
-    geom_sf(data = uwin_outline, color = "black", fill = "lightgrey", size = 1) +
-    geom_sf(data = summary_by_grid, aes(color = num_observations), size = 1.5) +
-    scale_color_viridis_c(option = "cividis", name = "Number of Bird Observations") +
-    coord_sf(xlim = c(-122.5, -122.15), ylim = c(37.7, 38.05), expand = TRUE) +
-    theme_minimal() +
-    labs(title = "Number of Bird Observations in the East Bay",
-         x = "Longitude", y = "Latitude")
-
-# look at the cell grid image of bird observations
-ggplot() +
-  geom_sf(data = eb_outline, color = "black", fill = "lightgray", size = 1) +
-  geom_sf(data = grid_summary, aes(fill = num_observations), color = NA) +
-  scale_fill_viridis_c(option = "cividis", name = "Scale of Observations", limits = c(0, 200000)) +
-  coord_sf(xlim = c(-122.5, -121.5), ylim = c(37.45, 38.1), expand = TRUE) +
-  theme_minimal() +
-  labs(title = "Number of Bird Observations in the East Bay", x = "Longitude", y = "Latitude") +
-  theme(
-    plot.title = element_text(size = 14, face = "bold"),
+# 4. number of total bird observations map on the block group level
+bird_obs <- ggplot() +
+    geom_sf(data = urban_block, aes(fill = cbg_n_records)) +
+    scale_fill_viridis_c(option = "turbo", name = "eBird Records") +
+    coord_sf(xlim = c(-122.4, -121.6), ylim = c(37.45, 38.1), expand = TRUE) +
+    theme_grey() +
+    theme(plot.title = element_text(size = 14, face = "bold"),
     axis.title = element_text(size = 12),
-    legend.title = element_text(size = 12),
+    legend.position = "inside",
+    legend.justification = c(0, 0),
+    legend.background = element_rect(fill = alpha("white", 0.7)),
+    legend.title = element_text(size = 10),
     legend.text = element_text(size = 10))
 
-print(bird_obvs)
+print(bird_obs)
 
-ggsave(filename = "ch2aviancats/R_figures/bird_obvs.jpeg", plot = bird_obvs,
+ggsave(filename = "~/Desktop/Meso_Study/ch2aviancats/R_figures/bird_obvs.jpeg", plot = bird_obs,
        width = 8, height = 8, dpi = 600)
+
+# 5: make map for the migratory species and the number of observations
+    migrant_obs <- ggplot() +
+    geom_sf(data = urban_block, aes(fill = cbg_n_records_migrant)) +
+    scale_fill_viridis_c(option = "turbo", name = "Migrant eBird Records") +
+    coord_sf(xlim = c(-122.5, -121.6), ylim = c(37.45, 38.1), expand = TRUE) +
+    theme_gray() +
+    theme(plot.title = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    legend.position = "inside",
+    legend.justification = c(0, 0),
+    legend.background = element_rect(fill = alpha("white", 0.7)),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 10))
+    
+print(migrant_obs)
+
+ggsave(filename = "~/Desktop/Meso_Study/ch2aviancats/R_figures/migrant_obs.jpeg", plot = migrant_obs,
+       width = 8, height = 8, dpi = 600)
+
+# now we need to join the maps together in a grid like structure to show each of their formats
+# stitching the plots together for chapter 2 summary statistics and visualization
+# need cowplot for this, intstall.packages(cowplot)
+
+ch2ebirdplot = cowplot::plot_grid(check_map, sprich_map, migrant_rich_map, bird_obs, migrant_obs, 
+labels = c("A", "B", "C", "D", "E"), align = "hv", ncol = 3, nrow = 2) # need to fix the legend size and integrate into the map for better picture, need to remove the guides() function
+# the map looks great! Add into the paper now, complete 12/12/2025
+
+# now let's save the plot and add it to the section
+ggsave(filename = "~/Desktop/Meso_Study/ch2aviancats/R_figures/ch2ebirdcombined.jpeg", plot = ch2ebirdplot, width = 14, height = 10, dpi = 600) # awesome, this is done now
 
 # Note: From the images it looks like the tilden regional area might be a habitat hotspot
 ```
 
 # Raster Pull
-```{r filtering ebird data to single cat point from ch.1, this is for chapter 3}
-# pull the needed covariates of interest to the grid ids in my study area
+```{r filtering the predictor variables to the spatial extent of the block group}
+# pull the needed covariates of interest to the block group in my study area
 # covariates include: noise, light, income, ndvi, migration_mean, temp, rain
 # elevation, impervious surface area, % of landcover, housing/population density
 here::i_am("cat_bird_chapter.Rmd")
@@ -641,12 +692,15 @@ library(exactextractr)
 library(terra)
 library(sf)
 # Note update summary_by_grid or create filtered sf after pulling the covariates!
-# raster extract the spring migration layer into the grid cells
+# raster extract the spring migration layer into the eb_outline or census block group geometry
 spring_migrate <- raster('~/Desktop/Meso_Study/ch2aviancats/GIS_data/spring_stopover_2500_v9.tif')
 
 # now we raster extract the information to our grid_summary, this looks good
 grid_summary$sp_migrate_mean <- raster::extract(spring_migrate, grid_summary, fun = mean)
 grid_summary$sp_migrate_sd <- raster::extract(spring_migrate, grid_summary, fun = sd)
+
+# pull the GIS data into the eb_outline and then intersect with the block group
+contra_alameda_vars$migration_mean <- raster::extract(spring_migrate, contra_alameda_vars, fun = mean)
 
 # now raster extract the rest of the other covariates and assign to grid_summary
 # pull and extract the elevation data for the grid layer
@@ -793,6 +847,9 @@ traffic_vect <- terra::vect(calenviro_traffic) # spatvector crs has to match the
 
 traffic_vect$Traffic <- as.numeric(traffic_vect$Traffic) # correct class form
 
+# visualize the vector image quickly
+plot(traffic_vect['Traffic']) # great we get a blank outline of the spatial extent
+
 # now that we have this properly filtered I need to turn this into rasterized format
 traffic_raster <- terra::rasterize(
   traffic_vect,
@@ -804,11 +861,38 @@ traffic_raster <- terra::rasterize(
 # test and see if values are present
 summary(values(traffic_raster)) # we now have values, great
 
-plot(traffic_raster) # this looks much better, yes we fixed it!
+plot(traffic_raster, zlim=c(0, 4000), main = "Threshold Limits on Traffic Volume") # this looks much better, yes we fixed it!
 plot(st_geometry(grid_summary), add = TRUE, border = "red") # might change later
 
+#-999 means missing values, need to go back in and change anything less than zero to NA
+# define the min threshold
+min_traffic <- 0
+
+# Set the values outside of the threshold to NA
+traffic_filtered <- traffic_raster
+traffic_filtered[traffic_filtered < min_traffic] <- NA
+
+summary(traffic_filtered) # perfect this is right now, min is 99.4 now
+
+# now plot the two to see the difference and then extract the values
+par(mfrow=c(1,2))
+plot(traffic_raster, main = "Original Traffic Volume")
+plot(traffic_filtered, main = "Filtered Traffic Volume w/ zero min") # looks great!
+
 # extract the mean values of the traffic raster and save the rds to updated
-grid_summary$traffic_mean <- exact_extract(traffic_raster['Traffic'], grid_summary, "mean")
+grid_summary$traffic_mean <- exact_extract(traffic_filtered['Traffic'], grid_summary, "mean")
+# move traffic volume in front of the geometry
+grid_summary <- grid_summary %>% relocate(traffic_mean, .before = geometry)
+
+glimpse(grid_summary)
+
+# try to pull traffic volume into the urban block group and see if it works
+urban_block$traffic_volume <- exact_extract(traffic_filtered['Traffic'], urban_block, "mean")
+# perfect this works since the CRS matches and we are pulling rasterized data into our block group
+
+# take a look at the outline of the dataset now if needed, readjust position
+glimpse(urban_block)
+urban_block <- urban_block %>% relocate(traffic_volume, .after = nightlights)
 
 # make new rds file composed of the vars
 saveRDS(grid_summary, file = '~/Desktop/Meso_Study/ch2_ebird_eastbay/data/grid_summary.rds')
@@ -825,50 +909,9 @@ summary(traffic_test)
 plot(traffic_test, legend = FALSE)
 plot(st_geometry(grid_summary), add = TRUE, border = "blue") # this works and idk why the other isn't
 
-#### Chapter 3 covariate extraction for bird x cat points ####
-# step 1: first we need to take a single shoreline site and create a 1 km buffer for it
-kitty_sample <- uwin_sf[1:71, ] # now this has all the uwin sites
-
-# now we need to create a buffer zone of 1 km for the kitty sample area, first set the df as a sf object
-buff_kitty <- st_as_sf(kitty_sample, coords = c("Lat", "Long"), 
-                       crs = 4326) # make sure to adjust the coords if needed 
-# now we set the buffer zone for the uwin sites at a 1km distance from each other
-baypoint_buffer <- st_buffer(buff_kitty, 1000)
-
-# plot and visualize the baypoint buffer zone
-plot(st_geometry(baypoint_buffer), col = "lightblue", main = "Buffer Zone")
-
-# step 2: now we load in the spring migration raster layer
-
-# create data frame for the spring migration layer
-
-
-# now we need to merge the migration data with the buffer points
-baypoint_buffer <- baypoint_buffer %>% mutate(ID = row_number()) %>% 
-              left_join(migration.df, baypoint_buffer, by = "ID")
-
-baypoint_buffer <- baypoint_buffer[-c(16:27)] # remove some clutter columns
-
-# step 3: now we need to extract the bird data for the specific buffer zone
-# first we need to fix the crs for the presence-only filtered data, change it to eb_outline
-ebd_sf <- st_transform(ebd_sf, crs = 4326) # we had 652k originally
-# now we need to extract within the buffer zone for the dataset
-within_indices <- st_within(ebd_sf, baypoint_buffer, sparse = TRUE) # need to return a list first
-# subset using the list
-ebd_presence <- ebd_sf[lengths(within_indices) > 0, ] # This is correct! updated 11/06/2024, we have 165k now
-
-# repeat the same for the complete checklists
-within_indices_2 <- st_within(complete_sf, baypoint_buffer, sparse = TRUE)
-# subset using the list
-ebd_complete <- complete_sf[lengths(within_indices_2) > 0, ] # This is correct! updated 11/06/2024
-
-# time to turn the objects to data frames, no longer needed?
-ebd_presence_df <- as.data.frame(ebd_presence) # updated
-ebd_complete_df <- as.data.frame(ebd_complete) # updated
-
-# Step 4: write the information as csv tables to send to Diego for coding troubleshooting
-write.csv(ebd_presence_df, "ch2aviancats/R_tables/ebd_presence.csv", row.names = FALSE)
-write.csv(ebd_complete_df, "ch2aviancats/R_tables/ebd_complete_checklists.csv", row.names = FALSE)    
+# test an extraction of the test raster
+test_extract <- raster::extract(traffic_test, grid_summary, fun = mean)
+summary(test_extract) # this is only giving the rows of data? Yeah, it is.
 ```
 
 # Night Lites
@@ -1289,95 +1332,6 @@ grid_sf_with_scores <- grid_summary_proj %>%
 
 ```
 
-# Extract Covs
-```{r loading covariates of interest}
-# load in the covariates of interest, adjust spatial extent of grid_summary
-uwin_landcov <- as(st_transform(st_as_sf(baypoint_buffer), crs(nlcd_landcover)),'Spatial')
-uwin_landcov_vec = terra::vect(uwin_landcov)
-
-uwin_landcov_vec$nlcd_landcover = terra::extract(nlcd_landcover,
-                                                              uwin_landcov_vec)[,2]
-p_landcover = as_tibble(uwin_landcov_vec) |>
-  dplyr::select(Site_code,
-                nlcd_landcover) |> as_tibble() # this gives me the percentage of landcover
-
-# should we partition the land cover types?
-
-
-
-uwin_sf_impervious = as.tibble(baypoint_buffer) |>
-  dplyr::select(Site_code, imp_surf) |> as.tibble()
-
-print(uwin_sf_impervious) # rounded by two decimal places
-
-# make sure to change the ndvi seasons to numerial
-uwin_vars_anno$ndvidry = as.numeric(uwin_vars_anno$ndvidry)
-uwin_vars_anno$ndviwet = as.numeric(uwin_vars_anno$ndviwet)
-
-# load in the annotated uwin file from Diego, join the missing variables to it
-uwin_vars_anno = read.csv('~/Desktop/Meso_Study/ch2aviancats/data/uwin_anno_tyus_20250328_v2.csv')
-
-baypoint_buffer %>% 
-  st_drop_geometry() %>% 
-  dplyr::select("Site_Names", "Site_code", "Zone", "migrate_mean",
-         "ndviwet", "ndvidry") -> pull_vars
-
-uwin_vars_anno <- left_join(uwin_vars_anno, pull_vars, by = c("Name" = 'Site_Names')) # this should work
-
-glimpse(uwin_vars_anno)
-
-uwin_vars_anno %>% 
-  rename(Site_Names = 'Name', ID = "X") -> uwin_vars_anno
-
-uwin_vars_anno$p_landcover <- p_landcover$nlcd_landcover # this looks good
-# curious if I need this and if it actually provides context to my data, talk to Diego
-
-# need to fix income and load in by site code, summarize by site code or site name
-mean.income <- income_uwin %>% 
-  st_drop_geometry() %>% 
-  group_by(Site_code) %>% 
-  summarise(mean_house_income = mean(medincomeE, na.rm = TRUE)) # this looks correct
-
-# average and summarise for the income_uwin sf as well
-income_uwin <- income_uwin %>% 
-  group_by(Site_Names, Site_code) %>% 
-  summarise(mean_income = mean(medincomeE, na.rm = FALSE)) # this has many gaps idk why
-
-uwin_vars_anno <- merge(uwin_vars_anno, mean.income, by = "Site_code") # need to rearrange by numerical order, maybe by ID?
-
-uwin_vars_anno = uwin_vars_anno %>% arrange(ID, .by_group = FALSE) # this looks better
-
-# check and see if the table looks right
-glimpse(uwin_vars_anno) # move zone after ID col so I can scale the columns w/ ease
-
-uwin_vars_anno %>% relocate(Zone, .after = ID) -> uwin_vars_anno # shifts zone after ID
-
-### Now we run a correlation matrix ####
-### to determine which variables to exclude ###
-
-# make sure to scale the vars to reduce error #
-scaled.vars = as.data.frame(scale(uwin_vars_anno[9:21], scale = TRUE)) # looks good
-
-cor.matrix <- cor(scaled.vars, use = "complete.obs", method = "pearson") # look at the correlation estimate
-
-print(cor.matrix) # this looks much better, now in matrix format
-
-# make the matrix plot
-corrplot::corrplot(cor.matrix, method = "square", 
-                   type = "full",
-                   addCoef.col = "black",
-                   addCoefasPercent = FALSE,
-                   outline = TRUE,
-                   insig = "pch",
-                   p.mat = NULL,
-                   tl.col = "black",
-                   tl.srt = 45) # this looks fine will improve later
-
-# threshold is greater than 0.6 shows covariance
-# variables that can be excluded: elev, pop density, ndvidry, and income?
-
-```
-
 # Trait Grab
 ```{r extract socioeconomic data under the uwin buffers and join avian traits data}
 # Note: You already pulled the bird data under the buffers!
@@ -1459,6 +1413,7 @@ presence_final$observation_count[missing_rows] <- 0
 ### Make similar sf file for the presence_absence data ###
 pres_absence_subset <- st_as_sf(pres_absence_subset, crs = 4326)
 pres_absence_subset <- st_transform(pres_absence_subset, crs = 4326) # set crs
+
 # check the consistency between the grid_ids for the sf files
 # compare the grid_id assigned via attribute vs. via spatial join
 check_join <- st_join(pres_absence_subset, grid_summary["grid_id"]) 
@@ -1522,7 +1477,6 @@ habitat_counts_grid <- unique_species_site %>%
 # take a glimpse at the format
 glimpse(habitat_counts_grid) # should every grid_id have detections?
 
-
 # Step 4: calculate the percentages of species by habitat category per site
 p_habitat <- habitat_counts_grid %>% 
   group_by(grid_id) %>%
@@ -1542,7 +1496,8 @@ p_habitat_wide <- p_habitat %>%
 # Step 5: estimate broad summaries for the grid_id to use in modeling
 # grab covariate and get distinct grid_id rows to use for analysis
 ebird_covs <- pres_absence_final %>% st_drop_geometry() %>% 
-  dplyr::select(c(, 2,24:36)) %>% distinct() # this looks right now
+  dplyr::select(c(, 2,24:36)) %>% distinct() # this looks right now, base form
+# original form if you need to restart, use this but make sure to join traffic later
 
 # now estimate bird counts and unique birds and add it to the test df
 ebird_estimates <- pres_absence_final %>%
@@ -1597,17 +1552,26 @@ ebird_covs <- ebird_covs %>%
  dplyr::mutate(across(c(sp_migrate_mean, sp_migrate_sd, elev_mean, ndviwet_mean,
                   ndvidry_mean, imp_surf, p_landcover), as.numeric))
 
+# update, join in the traffic volume data since you have the grid ids
+ebird_covs_test <- grid_summary %>% st_drop_geometry() %>% dplyr::select(traffic_mean, grid_id) %>% inner_join(ebird_covs, grid_summary, by = 'grid_id')
+
+# check for row duplicates
+grid_summary[1102,]
+duplicates <- ebird_covs_test[duplicated(ebird_covs_test), ]
+duplicate_counts <- table(ebird_covs_test[duplicated(ebird_covs_test), ])
+
+# test the df to see how many there are
+duplicates
+duplicate_counts # alright we have no duplicates despite the many-to-many warning
+
+# remove the test sf and other values
+rm(ebird_covs_test, duplicates, duplicate_counts)
+
+# update ebird_covs with the new variable for noise (traffic impacts)
+ebird_covs <- grid_summary %>% st_drop_geometry() %>% dplyr::select(traffic_mean, grid_id) %>% inner_join(ebird_covs, grid_summary, by = 'grid_id')
+
 # save a quick csv file for future datasets if needed
-write.csv(ebird_covs, file = "~/Desktop/Meso_Study/ch2aviancats/data/ebird_eastbay_tests.csv", row.names = FALSE) # dope! saved 09/25/2025
-
-# try to create data table where I can visualize the data! #
-ebird_viz_data <- p_habitat %>% 
-  left_join(ebird_eastbay_tests, by = "grid_id") # might remove some cols
-
-# remove some columns that are not needed
-ebird_viz_data <- ebird_viz_data %>%
-  dplyr::select(-c(num_bird_obvs, num_species)) %>%
-  relocate(c(num_records, num_migr_sp, Migration), .after = total_obvs)
+write.csv(ebird_covs, file = "~/Desktop/Meso_Study/ch2aviancats/data/ebird_eastbay_tests.csv", row.names = FALSE) # dope! saved 11/07/2025
 
 # build out summary estimate tables for the results section #
 bird_obvs_summary <- presence_final %>% 
@@ -1625,21 +1589,28 @@ summary(bird_obvs_summary)
 
 # scale the variables, this should be ready for modeling now, hooray! :)
 ebird_scaled <- ebird_covs
-ebird_scaled[,2:24] <- as.data.frame(
-  scale(ebird_scaled[,2:24], scale = TRUE)) # something might be off here...
+ebird_scaled[,2:25] <- as.data.frame(
+  scale(ebird_scaled[,2:25], scale = TRUE)) # something might be off here...
 
-# remove the standard deviation for the scaled df
+# remove the standard deviation for the scaled df, will need later on
 ebird_scaled <- ebird_scaled %>% 
   dplyr::select(-sp_migrate_sd) # perfect
 
 # create table so it saved and stored somewhere for future use
-write.csv(ebird_scaled, file = '~/Desktop/Meso_Study/ch2aviancats/data/ebird_scaled_final.csv', row.names = FALSE) # updated 09/25/2025
+write.csv(ebird_scaled, file = '~/Desktop/Meso_Study/ch2aviancats/data/ebird_scaled_final.csv', row.names = FALSE) # updated 11/07/2025
 ```
 
-# Test Models!
+## Glm Models
 ```{r visualizing and modeling the data from ebird pres_absence dataset}
+install.packages("caret")
+install.packages("modelsummary")
 library(MuMIn)
 library(ggridges)
+library(flextable)
+library(gtsummary)
+library(caret) # this will allow me to do the GCV valdation test
+library(MASS)
+
 ### Consider I will have three major models relating to my questions ###
 # 1) The luxury effect of digital data:
 # Number of complete checklists ~ Anthropogenic + Environmental + Climatic Variables
@@ -1658,19 +1629,54 @@ library(ggridges)
 ### Predictor variables of interest ###
 # median income, housing density, ndvi, migration density, temp mean, light pollution, and noise pollution/traffic volume
 
+# run a correlation matrix to look at the relationship between vars!! ##
+variables <- urban_scaled %>% st_drop_geometry() %>%
+  dplyr::select(4, 8, 18:26) %>%
+  mutate(across(everything(), scale)) %>%
+  mutate(across(everything(), as.numeric)) # using this for the matrix table
+
+cor.matrix <- cor(variables, use = "complete.obs", method = "pearson")
+
+# make the matrix plot
+corrplot::corrplot(cor.matrix, method = "square", 
+                   type = "full",
+                   addCoef.col = "black",
+                   addCoefasPercent = FALSE,
+                   outline = TRUE,
+                   insig = "pch",
+                   p.mat = NULL,
+                   tl.col = "black",
+                   tl.srt = 45) # this looks fine will improve later
+
+# final variables: ALAN, traffic_volume, housing density, income, and temperature
+
+# make sure the random effect here is in the factor format
+urban_scaled$OBJECTID <- as.factor(urban_scaled$OBJECTID)
+
 # Try looking at GAM w/ GLMM outputs or using lm/lme4 #
 # load in the dredge package and see all the possibilities with covs
-# first we need a clean dataset
-cleaned_scaled <- na.omit(ebird_scaled) # do I have to omit data?
-cleaned_scaled$grid_id <- as.factor(cleaned_scaled$grid_id)
-ebird_scaled$grid_id <- as.factor(ebird_scaled$grid_id)
+# first we need a clean dataset, make df out of the urban block group
+
+urban_scaled <- urban_block %>% 
+  st_drop_geometry() %>%
+  as.data.frame() %>% 
+  mutate(across(c(4, 7, 8, 18:23, 25, 26), ~ as.numeric(scale(.x))))
+ # should be better now
+
+# omit the NA values to get the cleaned version of the dataset
+omit_cleaned <- na.omit(urban_scaled) # should be ready to run in the train model
+
+# test the correlation between my predictor variables
+# Check correlations between your predictors
+cor(urban_scaled[, c("housing_density", "traffic_volume", "nightlights", "med_hh_income", "bio12")], use = "complete.obs", method = "pearson")
+
 
 # Build global model to see all the combinations #
 # establish global.model using gam/lm and peform dredge function on the variables
-global.mod <- lm(num_bird_obvs ~ migrate_mean + bio_1 + bio_12 + p_landcover + ndviwet + elev + mean_pop_density + mean_house_income + mean_housing_density + imp_surf + ntl_mean, data=cleaned_scaled, na.action = na.fail)
+global.mod <- lmer(cbg_n_records ~ housing_density + pop_density + bio1 + bio12 + ndvi + elevation + imp_surf + nlcd_landcover + nightlights + traffic_volume + med_hh_income + (1 | OBJECTID), data = omit_cleaned, na.action = na.fail)
 
 # test the dredge function w/ lm function
-dredge(global.mod, beta = none, evaluate = TRUE, rank = "AIC") 
+dredge(global.mod, evaluate = TRUE, rank = "AIC") 
 # best model 809 returned imp_surf, hsing_dens, ndviwet, and ntl_mean via AIC
 # AIC score of 136.4, still preliminary model
 
@@ -1680,228 +1686,268 @@ global.mod2 <- lmer(num_bird_obvs ~ migrate_mean + bio_1 + bio_12 + p_landcover 
 dredge(global.mod2, evaluate = TRUE, rank = "AIC") # see difference
 # best model also 809 with AIC of 145.8, same variables
 
-#### Testing the Hypotheses w/ Models #### Updated: 09/08/25
-# The luxury effect of digital data #
-# Response: Total Bird Observations or Complete Checklists
-# Predictors: Median income, unique species, mean migration, lights, noise, and ndvi
-# Model:
- bird_obs <- lmer(num_bird_obvs ~ mean_pop_density + migrate_mean + mean_house_income + bio_1 + bio_12 + ndviwet + ntl_mean + elev + (1 | Zone), data = ebird_scaled)
- tab_model(bird_obs)
- plot_model(bird_obs, type = "pred")
- 
- # The luxury effect and bird biodiversity patterns # 
- # Response: Number of unique bird species
- # Predictors: Median income, num_bird_obvs, ndvi, impervious, pop_density, housing_density
- # Model:
- bird_diversity = lmer(unique_num_species ~ mean_pop_density + mean_house_income + bio_1 + 
-bio_12 + ndviwet + ntl_mean + elev + (1 | Zone), data = ebird_scaled)
- summary(bird_diversity)
- tab_model(bird_diversity)
- 
- gam_2 = gam(num_bird_obvs ~ s(median_income) + s(median_income, unique_species), data = ebird_summary)
- summary(gam_2)
- 
- anova(bird_diversity, gam_2, test = "Chisq")
- 
- # The luxury effect and functional diversity #
- # Response: Mean Migration Density (Fall and Spring stopover data)
- # Predictors: nightlights, noise pollution, climate, elevation, and ndvi
- # model:
- bird_migration = lmer(migrate_mean ~ mean_pop_density + mean_house_income + ntl_mean + 
-elev + bio_1 + bio_12 + (1 | Zone), data = ebird_scaled)
- summary(bird_migration)
- tab_model(bird_migration)
- plot_model(bird_migration, type = 'pred')
- plot_model(bird_migration, show.values = TRUE, valie.offset = .3)
+# lets set the factor groups so we have random effects to actually look at
 
- gam_3 = gam(migration_mean ~ s(unique_species) + s(median_income) + s(num_bird_obvs), data = ebird_summary)
- summary(gam_3)
+# we need to make the cbg data columns 27-31 into numeric form
+urban_scaled <- urban_scaled %>% mutate(across(where(is.matrix), as.numeric))
+
+# we need to make sure the cbg data columns are in the integer format
+glimpse(urban_scaled)
+urban_scaled$cbg_n_records <- as.integer(urban_scaled$cbg_n_records)
+
+#### Testing the Hypotheses w/ Models #### Updated: 11/07/25
+# The luxury effect of digital data #
+# Response: resident bird records
+# Predictors: Median income, housing density, temperature, lights, noise, and ndvi
+# Model:
+ bird_obs <- glmer(cbg_n_records ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + offset(log(area_km2)) + (1 | OBJECTID), family = poisson, data = urban_scaled)
+ summary(bird_obs)
+ tab_model(bird_obs)
+ plot_model(bird_obs, type = "diag") # allows me to visualize qqnorm and residuals
+ # now we should test the normality of the data and see how it fits using the shapiro-wilks test
+ qqnorm(urban_scaled$mean_records, main = "QQ Normality Plot")
+ qqline(urban_scaled$mean_records, col = "red3")
  
- anova(bird_migration, gam_3, test = "Chisq") # gam_3 runs better and provides more info
- # gam_3 is better using the gam approach
+ # perform the shapiro wilks test now
+ shapiro.test(log(urban_scaled$mean_records)) # p-value < 0.05 so it is not normally distributed
  
- # Functional Ecology influenced by variables #
- # Response: % of taxa based on habitat type (Forest or grassland)
- # Predictors: precip, temp, income, pop_density or housing_density, nightlights, NDVI, elev
- taxa_type1 = gam(pcnt_forest ~ s(housing_density_mean) + s(medincome_mean) + s(bio1_temp_mean) + s(ndviwet_mean) + s(nitelite_mean), data = ebird_scaled)
- tab_model(taxa_type1) # percent of species that are forest associated
- plot_model(taxa_type1, type = "pred")
+ # test the same model using the glm approach without the random effect
+GLM1 <- glm(cbg_n_records ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + offset(log(area_km2)), family = poisson, data = omit_cleaned)
+summary(M1)
+anova(M1)
+# test for overdispersion looking at residual deviance / df > 1.2
+(12817344 / 1477) # 8677.96, yes this is overdispersed
+
+NB1 <- glm.nb(cbg_n_records ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 
++ offset(log(area_km2)), data = urban_scaled)
+summary(NB1)
+anova(NB1)
+plot_model(NB1)
+sjPlot::tab_model(NB1)
+
+lm.test <- lm(cbg_n_records ~ area_km2, method = "qr", family = poisson, data = urban_scaled)
+ summary(lm.test)
+ plot(lm.test)
+ # now we run the k-fold gcv test to get the RMSE validation #
+ ## Make sure to run this for each model I have! ##
  
- taxa_type2 = gam(pcnt_understory ~ s(housing_density_mean) + s(medincome_mean) + s(bio1_temp_mean) + s(ndviwet_mean) + s(nitelite_mean), data = ebird_scaled)
- tab_model(taxa_type2) # % of species that are understory associated
- plot_model(taxa_type2, type = "pred")
+ # first we specify the parameters of the model
+ ctrl <- trainControl(method = "cv", number = 5)
  
- taxa_type3 = gam(pcnt_urban ~ s(housing_density_mean) + s(medincome_mean) + s(bio1_temp_mean) + s(ndviwet_mean) + s(nitelite_mean), data = ebird_scaled)
- tab_model(taxa_type3) # % of species that are urban associated
- plot_model(taxa_type3, type = "pred")
+# now we fit a regression model and use k-fold to evaluate the performance
+model1_cv <- train(cbg_n_records ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + ndvi + (1 | OBJECTID), data = omit_cleaned, method = "glm", trControl = ctrl) # consider using non-scaled data in the future
  
- taxa_type4 = gam(pcnt_aquatic ~ s(housing_density_mean) + s(nitelite_mean) + s(ndviwet_mean) + s(bio1_temp_mean) + s(medincome_mean), data = ebird_scaled)
- tab_model(taxa_type4)
- plot_model(taxa_type4, type = "pred")
+# now we print the model summary
+print(model1_cv) # the RMSE is 0.910 which is below 1, looking good!
  
- ## BASE MODEL BUILD OUT W/ CHRIS AND DIEGO ##
- ### Running base models with simpler approach ###
- # what are bird observations responsive and conditional to?
- # what informs the bird observations throughout the East Bay Area?
- lm_model1 <- lm(num_bird_obvs ~ imp_surf + medincome_mean + elev_mean + housing_density_mean + 
-ndviwet_mean + nitelite_mean + bio1_temp_mean, data = ebird_scaled)
- summary(lm_model1)
- tab_model(lm_model1) # something is off with this median income variable
+# now we pull the model results specifically
+model1_cv$finalModel
  
- # lets check the residuals and test the fitness of the model
- R1 <- resid(lm_model1)
- F1 <- fitted(lm_model1)
- plot(x = F1, y = R1, xlab = "Fitted values",
-      ylab = "Residuals")
- abline(h = 0, v = 0, lty = 2)
- plot(x = ebird_scaled$num_bird_obvs, y = ebird_scaled$sp_migrate_mean,
-      xlab = "Number of Bird Observations", ylab = "Migration Stopover Density", pch = 16)
- abline(lm_model1, lwd = 5)
+# we can also view the predictions drawn from each fold
+model1_cv$resample
+
+ ## The luxury effect and bird biodiversity patterns ##
+ # Response: Number of resident bird species
+ # Predictors: Median income, housing density, rain, ALAN, traffic volume, and ndvi
+ # Model:
+ bird_diversity = glmer(cbg_species_richness ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + offset(log(area_km2)) + (1 | OBJECTID), family = poisson, data = urban_scaled)
+ summary(bird_diversity)
+ anova(bird_diversity)
+ tab_model(bird_diversity)
+ plot_model(bird_diversity, type = "diag")
+ # might need random effect based on habitat patches and what is considered impervious/green?
  
- # Now we test the model using a glm poisson instead here #
- glm0 <- glm(num_bird_obvs ~ nitelite_mean, data = ebird_covs, 
-             family = poisson) # negative values not allowed for poisson
- summary(glm0) # AIC score is too high
+ # check the qq norm distribution for the data and test normality
+ shapiro.test(log(urban_scaled$mean_species)) # p-value is < 0.05
  
- # model interpretation of the glm output
- beta1 <- coef(glm0) [1]
- beta2 <- coef(glm0) [2]
- eta <- beta1 + beta2 * ebird_covs$nitelite_mean
- mu <- exp(eta)
+ GLM2 <- glm(cbg_species_richness ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + offset(log(area_km2)), data = urban_scaled)
+summary(M2) # consider using negative binomial models to reduce the overdispersion
+summary(M2)$coefficients
+plot_model(GLM2, type = "pred")
+plot(GLM2)
+
+# now make the same model using the negative binomial
+NB2 <- glm.nb(cbg_species_richness ~ housing_density + traffic_volume + nightlights + med_hh_income + bio1 + offset(log(area_km2)), data = urban_scaled)
+summary(NB2)
+anova(NB2)
+plot.model(NB2, type = "pred")
+r.squaredGLMM(NB2)
  
- # pulling the log likelihood function of the Poisson
- y <- ebird_covs$num_bird_obvs
- LogL <- sum(y * log(mu) - mu - lgamma(y + 1)) # then run it
- logLik(glm0)
- 2 * sum(y * log(y / mu) - (y - mu))
- 
- # visualising the glm0 output after fitting and testing deviances #
- # need max and min of nitelite_mean
- summary(ebird_covs$nitelite_mean) # (0.0, 172.19)
- MyData <- data.frame(nitelite_mean = seq(0.00, 172.19, length = 25)) # wrong
- P1 <- predict(glm0, newdata = MyData, type = "response")
- plot(x = ebird_covs$nitelite_mean, y = ebird_covs$num_bird_obvs,
-      ylim = c(0, 3588),
-      xlab = "ALAN Mean",
-      ylab = "Total Bird Observations")
- lines(MyData$nitelite_mean, P1, lwd = 3)
- 
- # model validation and testing residuals for the glm #
- # extract the pearson residual and other likelihood vars
- E1 <- resid(glm0, type = "pearson")
- F2 <- fitted(glm0)
- eta <- predict(glm0, type = "link")
- 
- plot(x = F2, y = E1, xlab = "Fitted values",
-      ylab = "Pearson residuals")
- abline(h = 0, v = 0, lty = 2) # not a lot of dipsersion relatively fit
- plot(x = eta, y = E1, xlab = "Eta (Predicted)",
-      ylab = "Pearson residuals")
- abline(h = 0, v = 0, lty = 2)
- plot(x = ebird_covs$nitelite_mean, y = E1,
-      xlab = "Artificial Lights at Night (mean)",
-      ylab = "Pearson residuals")
- abline(h = 0, v = 0, lty = 2)
- 
- 
- # testing the dispersion statistic
- N <- nrow(ebird_covs)
- p <- length(coef(glm0))
- Dispersion <- sum(E1^2) / (N - p) # sum of pearson squared values divided by the degrees of freedom (N - p) to get the dispersion statistic
- Dispersion # massive overdispersion if greater than 1, 58702.35
- 
- # introduce a covariate interaction to the model
- glm2 <- glm(num_bird_obvs ~ nitelite_mean * imp_surf, data = ebird_covs,
-             family = poisson) # unscaled should try negative binomial next
- summary(glm2)
- # now we take and test for the dispersion statistic
- E2 <- resid(glm2, type = "pearson")
- p <- length(coef(glm2))
- Dispersion <- sum(E2^2) / (N - p)
- Dispersion # 60525.71, increase likely due to unscaled values
- 
- # testing negative binomial for the response variables
- glm3 <- glmer.nb(num_bird_obvs ~ nitelite_mean * imp_surf + 
-                    offset(ndviwet_mean), 
-                data = ebird_covs) # random effects are missing
- summary(glm3)
- 
- # --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- #
+ # now we need to run the k-fold validation model for the data #
+model2_cv <- train(cbg_species_richness ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + ndvi + (1 | OBJECTID), data = omit_cleaned, method = "glm", trControl = ctrl)
+
+# lets look at the model results not
+print(model2_cv)
+
+# now we pull the model results
+model2_cv$finalModel
+
+# now we pull the model predictions
+model2_cv$resample
+
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- #
  # looking at migratory species in response to urban/enviro variable
  # how are migratory species responding to urban environments?
  # --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- #
+ # migratory birds in response to urban environments and their composition
+migrant_diversity <- glmer(cbg_migrant_species_richness ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + ndvi + offset(log(area_km2)) + (1 | OBJECTID), family = poisson, data = urban_scaled)
+summary(migrant_diversity)
+tab_model(migrant_diversity)
+plot_model(migrant_diversity, type = "diag")
+
+# test for the overdispersion and check if there are issues
+(35062.2 / 871) # 40.25 > 1.2
+
+# draft the model for the glm
+GLM3 <- glm(cbg_migrant_species_richness ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + ndvi + offset(log(area_km2)), family = poisson, data = urban_scaled)
+
+# make model for the negative binomial
+NB3 <- glm.nb(cbg_migrant_species_richness ~ housing_density + traffic_volume + nightlights + med_hh_income + bio1 + ndvi + offset(log(area_km2)), data = urban_scaled)
+summary(NB3)
+anova(NB3)
+r.squaredGLMM(NB3)
+
+# Expand out the k-fold validation model
+model3_cv <- train(cbg_migrant_species_richness ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + ndvi + (1 | OBJECTID), data = omit_cleaned, method = "glm", trControl = ctrl)
+
+# view the results of the model
+print(model3_cv)
+
+# view the results of the final model
+model3_cv$finalModel
+
+# check out the prediction output
+model3_cv$resample
+
+## Analyzing the luxury effect and survey checklist dynamic ##
+# Response: The number of survey checklists performed
+# Predictors: Standard as above ^^^
+# Model:
+ebird_checklists = lmer(n_checklists ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + offset(log(area_km2)) + (1 | OBJECTID), data = urban_scaled)
+summary(ebird_checklists)
+tab_model(ebird_checklists)
+plot_model(ebird_checklists, type = "diag")
+
+# make model for the GLM and then the negative binomial as well
+
+GLM4 <- glm(n_checklists ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + offset(log(area_km2)), family = poisson, data = urban_scaled)
+
+# now the glm negative binomial
+NB4 <- glm.nb(n_checklists ~ housing_density + traffic_volume + nightlights + med_hh_income + bio1 + offset(log(area_km2)), data = urban_scaled)
+summary(NB4)
+anova(NB4)
+r.squaredGLMM(NB4)
+
+# now we expand out the k-fold validation
+model4_cv <- train(n_checklists ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + ndvi + (1 | OBJECTID), data = omit_cleaned, method = "glm", trControl = ctrl)
+
+# view the results of the model
+print(model4_cv)
+
+# view the results of the final model
+model4_cv$finalModel
+
+# check out the prediction output
+model4_cv$resample
+
+## The Luxury effect and bird biodiversity patterns ##
+# Response: Number of migratory bird records
+# Fixed effects: Standard covariates as listed above ^^^
+# Model:
+migrant_records <- glmer.nb(cbg_n_records_migrant ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + ndvi + offset(log(area_km2)) + (1 | OBJECTID), family = poisson, data = urban_scaled)
+summary(migrant_records)
+tab_model(migrant_records)
+plot_model(migrant_records, type = "diag")
+
+GLM5 <- glm(cbg_n_records_migrant ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + ndvi + offset(log(area_km2)), family = poisson, data = urban_scaled)
+
+NB5 <- glm.nb(cbg_n_records_migrant ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + ndvi + offset(log(area_km2)), data = urban_scaled)
+
+# Build out the k-fold model here now
+model5_cv <- train(cbg_n_records_migrant ~ housing_density + traffic_volume +
+nightlights + med_hh_income + bio12 + ndvi + (1 | OBJECTID), data = omit_cleaned, method = "glm", trControl = ctrl)
+
+# check the final model if needed
+model5_cv$finalModel
+
+# check the resample size 
+model5_cv$resample
+
+ ## The luxury effect and migration biomass ##
+ # Response: Mean Migration Density (Fall and Spring stopover data)
+ # Predictors: nightlights, noise pollution, climate, elevation, and ndvi
+ # model:
+ bird_migration = glmer(spring_migration ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + ndvi + (1 | OBJECTID), data = urban_scaled)
+ summary(bird_migration)
+ tab_model(bird_migration)
+ plot_model(bird_migration, type = 'pred')
+ plot_model(bird_migration, show.values = TRUE, value.offset = .3)
  
- lm_model2 <- lm(num_migr_sp ~ ndviwet_mean + nitelite_mean + 
-imp_surf + bio1_temp_mean + medincome_mean + nitelite_mean * medincome_mean, data = ebird_scaled)
-summary(lm_model2)
-tab_model(lm_model2)
-
-gam2 <- gam(num_migr_sp ~ s(ndviwet_mean) + s(nitelite_mean) + s(medincome_mean) +
-             s(pcnt_forest) + s(pcnt_understory) + s(pcnt_urban) + s(pcnt_aquatic), data = ebird_scaled)
-summary(gam2)
-tab_model(gam2)
-plot_model(gam2, type = "pred")
-
-# How are migrating birds responding to urban gradients that vary in wealth and composition?
-lm_model3 <- lm(sp_migrate_mean ~ medincome_mean + nitelite_mean + elev_mean +
-                ndviwet_mean + bio1_temp_mean + ndviwet_mean * bio1_temp_mean, data = ebird_scaled) # most variables significant except median income
-summary(lm_model3)
-tab_model(lm_model3)
-
-# check this and smooth it as a gam model
-gam3 <- gam(sp_migrate_mean ~ s(medincome_mean) + s(nitelite_mean) + s(elev_mean) +
-                s(ndviwet_mean) + s(pcnt_forest) + 
-              s(pcnt_understory) + s(pcnt_aquatic), data = ebird_scaled)
-summary(gam3)
-tab_model(gam3)
-plot_model(gam3, type = "pred")
-# we see a subtle relationship where migration biomass increases subtly with median income but decreases with artificial lights when the mean value is greater than 4 (inflection point)
-
-# how are resident bird species responding to the
-resident_birds <- gam(num_resid_sp ~ s(ndviwet_mean) + s(nitelite_mean) + s(medincome_mean) +
-     s(housing_density_mean) + s(bio1_temp_mean) + s(sp_migrate_mean), data = ebird_scaled)
-summary(resident_birds)
-tab_model(resident_birds)
-plot_model(resident_birds, type = "pred")
-# we see clear patterns that as ndvi increases along with housing density we see more resident birds but we see a gradual decrease in response to ALAN. Observations also decline with higher temps and migration biomass.
-
-# TEST VISUALIZING THE PRELIM DATASET: SUBJECT TO CHANGE #
- # Box plot with migratory status and covariates combined with bird observations
- ggplot(ebird_viz_data, aes(x = habitat_category, y = total_obvs, fill = habitat_category)) +
-   geom_boxplot() +
-   theme_minimal()
+ GLM6 <- glm(log(spring_migration) ~ housing_density + traffic_volume + nightlights + med_hh_income + bio1 + ndvi + offset(log(area_km2)), family = Gamma(link = 'log'), data = urban_scaled)
+summary(GLM6)
+anova(GLM6)
+tab_model(GLM6)
+plot_model(GLM6, type = "pred")
+r.squaredGLMM(GLM6)
  
- # linear plot for bird observations x nitelights x habitat categories or lifestyle traits
- ggplot(ebird_viz_data, aes(x = nitelite_mean, y = total_obvs)) +
-  geom_point(
-    aes(color = habitat_category, shape = habitat_category),
-    size = 1.5,
-    alpha = 0.8) + 
-   ylim(10, 85000) + 
-   xlim(0, 100) +
-   scale_color_manual(values = c("orange", "lightblue", "forestgreen", "salmon"))
+ # --- --- --- --- --- --- --- --- --- --- --- --- #
+ ## Functional Ecology influenced by variables ##
+ # Response: % of taxa based on habitat type (forest or understory)
+ # Predictors: precip, temp, income, pop_density or housing_density, nightlights, NDVI, elev
+ taxa_type1 = gam(pcnt_forest ~ s(housing_density_mean) + s(medincome_mean) + s(bio1_temp_mean) + s(ndviwet_mean) + s(traffic_mean) + s(nitelite_mean), data = ebird_scaled)
+ summary(taxa_type1)
+ tab_model(taxa_type1) # percent of species that are forest associated
+ plot_model(taxa_type1, type = "pred")
+ # forest birds might not be affected by light due to light filtration through canopies but they can still be influenced by sound near busy roads influencing communication and fitness
+ 
+ taxa_type2 = gam(pcnt_understory ~ s(housing_density_mean) + s(medincome_mean) + s(bio1_temp_mean) + s(ndviwet_mean) + s(nitelite_mean) + s(traffic_mean), data = ebird_scaled)
+ tab_model(taxa_type2) # % of species that are understory associated
+ plot_model(taxa_type2, type = "pred")
+ summary(taxa_type2)
+ 
+ taxa_type3 = gam(pcnt_urban ~ s(housing_density_mean) + s(medincome_mean) + s(bio1_temp_mean) + s(ndviwet_mean) + s(nitelite_mean) + s(traffic_mean), data = ebird_scaled)
+ tab_model(taxa_type3) # % of species that are urban associated
+ plot_model(taxa_type3, type = "pred")
+ summary(taxa_type3)
+ 8# plots highlight that urban birds are plastic and responsive to various conditions but still have thresholds for certain stimuli they are exposed to such as dense housing and lights
+ 
+ taxa_type4 = gam(pcnt_aquatic ~ s(housing_density_mean) + s(nitelite_mean) + s(ndviwet_mean) + s(bio1_temp_mean) + s(medincome_mean) + s(traffic_mean), data = ebird_scaled)
+ summary(taxa_type4)
+ tab_model(taxa_type4) # % of species that are water or shoreline associated
+ plot_model(taxa_type4, type = "pred")
+ # aquatic birds are likely negatively associated with urban characteristics as development reduces available surface water, but will also be more likely to find them in water on warmer days?
+ 
+ # now we create a table pulling the model information from these model results to see how they compare to each other #
+# first we list the models with their respective names
+ model_list <- list(
+   "Bird Observations" = bird_obs,
+   "Migrant Observations" = migrant_records,
+   "Bird Diversity" = bird_diversity,
+   "Migrant Diversity" = migrant_diversity,
+   "eBird Checklists" = ebird_checklists
+ )
+ 
+ # now we try to create a succint table using model summary
+ modelsummary::modelsummary(model_list,
+                            estimate = "{estimate} [{conf.low}, {conf.high}]",
+                            statistic = "p.value",
+                            metrics = c("AIC", "R2", "RMSE"),
+                            output = "gt")
+ 
+ # make sjplot for the five lmer models and send to Diego
+ tab_model(bird_obs, migrant_records, bird_diversity, migrant_diversity, ebird_checklists)
 
-# make facet wrap plot for bird observations with night lights x habitat categories x lifestyle traits, looks okay
-ggplot() +
-  geom_point(data = ebird_viz_data, aes(x = nitelite_mean, y = total_obvs, color = Trophic.Level)) +
-  geom_smooth() +
-  ylim(0, 85000) +
-  xlim(0, 100) +
-  facet_wrap(~ habitat_category) +
-  xlab("Artificial Lights at Night") +
-  ylab("Total Number of Observations") +
-  theme_minimal()
-
-# visualize density plot of bird observations by habitat and niche traits
-ggplot(data = ebird_viz_data, aes(x = total_obvs, 
- fill = habitat_category)) + 
-  geom_density(adjust = 1.5) +
-  theme_minimal() # something is off with the column for total observations
-
-# make ridgeline chart showing the # of migratory species by habitat categories x lifesyle traits
-ggplot(ebird_viz_data, aes(x = Migration, y = Primary.Lifestyle, fill = Primary.Lifestyle)) +
-  geom_density_ridges() +
-  theme_ridges() +
-  theme(legend.position = "none")
+# make a csv table out of the smoothing terms
+write.csv(gam1_smooth, file = "~/Desktop/Meso_Study/ch2_ebird_eastbay/R_tables/total_bird_obvs_gam1.csv", row.names = TRUE)
 
 ```
+## Plot/Graph
+```{r visualizing the model outputs and estimates}
+# lets make some simple plots for the four response variables
+
+# Making plots for ebird checklists and significant vars #
+# Afterwards I will combine the plots together#
+ 
+ 
+```
+
