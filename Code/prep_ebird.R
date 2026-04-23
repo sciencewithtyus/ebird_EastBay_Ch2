@@ -443,8 +443,7 @@ bg_covs <- bg_covs %>%
 bg_covs <- bg_covs %>%
   mutate(
     checklist_density_km2 = n_checklists / area_km2,
-    record_density_km2    = cbg_n_records / area_km2
-  )
+    record_density_km2    = cbg_n_records / area_km2)c
 
 # --- --- --- --- --- --- --- ---
 # Store annotate cbg ####
@@ -491,7 +490,7 @@ st_write(
 )
 
 
-ounties <- tigris::counties(state = "CA", year = 2020, cb = TRUE) %>%
+counties <- tigris::counties(state = "CA", year = 2020, cb = TRUE) %>%
   filter(NAME %in% c("Alameda", "Contra Costa"))
 
 options(tigris_use_cache = TRUE)

@@ -1,0 +1,9 @@
+"variable","total","mean","median","sd","max","min"
+"eBird data records",3047888,2126.93,104,11392.53,203129,1
+"eBird checklists",172097,120.1,12,496.23,8699,1
+"number of resident species",20929,14.61,14,9.87,46,0
+"number of migratory species",45020,31.42,22,29.86,180,0
+"number of bird observations",16433872,11468.16,368,73378.4,1951147,1
+"migratory bird observations",11749294,8199.09,234,57868.37,1663693,0
+"resident bird observations",4199988,2930.91,131,16343.2,290999,0
+"migration stopover density",229808.57,126.55,129.1,36.59,325.01,37.76
