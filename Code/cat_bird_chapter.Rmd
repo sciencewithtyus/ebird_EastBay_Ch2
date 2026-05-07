@@ -3,8 +3,8 @@ title: "Migratory birds and anthropogenic responses"
 author: "Tyus D. Williams, Diego-Ellis Soto, and Christopher J. Schell"
 date: "1/22/2024"
 output:
-  html_document: default
   pdf_document: default
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -22,7 +22,7 @@ install.packages("pacman")
 library(pacman)
 
 # now select the packages I want in my workspace
-p_load("tidycensus","tidyverse","dplyr","sf","ggplot2", "terra", "tidyterra", "tibble", "lme4", "raster", "MuMIn", "auk", "here", "exactextractr", "modelsummary", "gtsummary", "MASS", "sjPlot", "blackmarbler", "data.table", "tigris")
+p_load("tidycensus","tidyverse","dplyr","sf","ggplot2", "terra", "tidyterra", "tibble", "lme4", "raster", "MuMIn", "auk", "here", "exactextractr", "modelsummary", "gtsummary", "MASS", "sjPlot", "blackmarbler", "data.table", "tigris", "glmmTMB", "flextable")
 ```
 
 # eBird/Avonet
@@ -704,7 +704,46 @@ bg_covs <- get_acs(
   # back to WGS84 for eBird points / auk
   st_transform(4326)
 
-# fix the arrangement of the sf table now
+# double check the missing values of the dataframe
+bg_diag <- get_acs(
+  geography = "block_group",
+  variables = acs_vars,
+  state = "CA",
+  county = c("Alameda", "Contra Costa"),
+  year = 2024,
+  survey = "acs5",
+  geometry = FALSE,
+  output = "wide"
+) %>% 
+  mutate(
+    county = case_when(
+      str_detect(NAME, "Alameda County") ~ "Alameda",
+      str_detect(NAME, "Contra Costa County") ~ "Contra Costa",
+      TRUE ~ NA_character_
+    ),
+    income_is_na = is.na(medincomeE),
+    households_zero_or_na = is.na(housingE) |
+      housingE == 0,
+    pop_zero_or_na = is.na(popE) |
+      popE == 0
+  )
+
+# spit out table for the diagnostic really quick as well
+bg_diag %>%
+  group_by(county) %>%
+  summarise(
+    n_block_groups = n(),
+    n_income_na = sum(income_is_na),
+    pct_income_na = mean(income_is_na) * 100,
+    n_income_na_and_no_houses = sum(income_is_na & households_zero_or_na),
+    n_income_na_with_households = sum(income_is_na & ! households_zero_or_na),
+    .groups = "drop"
+  )
+
+# check the sum of the missing values
+table(is.na(bg_diag$medincomeE))
+
+ # fix the arrangement of the sf table now
 bg_covs <- bg_covs %>%
   relocate(area_km2, .after = geometry) %>%
   relocate(pop_density, .after = pop) %>% 
@@ -998,8 +1037,7 @@ bg_covs_eastbay_msa <- bg_covs[st_within(bg_covs, msa_eastbay, sparse = FALSE), 
 
 st_write(
   bg_covs_eastbay_msa,
-  "~/Desktop/Meso_Study/ch2_ebird_eastbay/data/bg_covs_msa_all_socioeco_ebird_anno.gpkg",
-  layer = "bg_covs_eastbay_msa"
+  "~/Desktop/Meso_Study/ch2_ebird_eastbay/data/bg_covs_msa_all_socioeco_ebird_anno.gpkg",layer = "bg_covs_eastbay_msa"
 ) # completed 04/16/2026
 
 options(tigris_use_cache = TRUE)
@@ -1053,7 +1091,7 @@ rm(ALAN, ALAN_avg, bg_behavior, bg_fix, bg_outline, bg_union, bg_v, bg_v_crs, bg
 #### Loading in the files that Diego gave me with adjusted block group data ####
 # okay we need to load in the files using st_read and see the file structure
 # the file looks great but now we need to load in the full census block group data in case we need to add in more variables
-bg_covs <- st_read("~/Desktop/Meso_Study/ch2aviancats/data/cbg_all_socioeco_ebird_anno.gpkg")
+bg_covs <- st_read("~/Desktop/Meso_Study/ch2aviancats/data/cbg_all_socioeco_ebird_anno.gpkg") <- # final version
 
 # take a look at the file structure and see what we can adjust
 str(bg_covs) # this hold everything and is not constrained to urban areas only
@@ -1621,12 +1659,6 @@ rm(ebd_summary, ebd_habitat_summary, checklist_habitat_counts, habitat_count_wid
 
 ## Glm Models
 ```{r visualizing and modeling the data from ebird pres_absence dataset}
-library(MuMIn)
-library(flextable)
-library(modelsummary)
-library(gtsummary)
-library(MASS)
-
 ### Consider I will have three major models relating to my questions ###
 # 1) The luxury effect of digital data:
 # Number of complete checklists ~ Anthropogenic + Environmental + Climatic Variables
@@ -1644,6 +1676,12 @@ library(MASS)
 
 ### Predictor variables of interest ###
 # median income, housing density, ndvi, migration density, temp mean, light pollution, and noise pollution/traffic volume
+
+# check the missing data values of the dataset before you run the models
+
+# make sure the data is loaded in for the models
+
+bg_covs_ua <- st_read("~/Desktop/Meso_Study/ch2_ebird_eastbay/Output/bg_covs_urban_only_all_socioeco_ebird_anno.gpkg") # great this worked and it's in WGS 84 CRS format
 
 # run a correlation matrix to look at the relationship between vars!! ##
 variables <- bg_covs_ua %>% st_drop_geometry() %>%
@@ -1669,10 +1707,12 @@ corrplot::corrplot(cor.matrix, method = "square",
 # Try looking at GAM w/ GLMM outputs or using lm/lme4 #
 # load in the dredge package and see all the possibilities with covs
 # first we need a clean dataset, make df out of the urban block group
+list(colnames(urban_scaled))
+
 urban_scaled <- bg_covs_ua %>% 
   st_drop_geometry() %>%
   as.data.frame() %>% 
-  mutate(across(c(4:17), ~ as.numeric(scale(.x))))
+  mutate(across(c(4:9,24:29,31,32), ~ as.numeric(scale(.x))))
  # should be better now
 
 # test the correlation between my predictor variables
@@ -1687,15 +1727,45 @@ urban_scaled$cbg_n_records <- as.integer(urban_scaled$cbg_n_records)
  urban_scaled$log_areakm2 <- log(urban_scaled$area_km2) # perfect this works
  
  urban_scaled$log_checklist_km2 <- log(urban_scaled$checklist_density_km2)
+ # these should not be scaled
  
  # check if the checklist_density_km2 has any zeros in the column
  any(urban_scaled$checklist_density_km2 == 0, na.rm = TRUE)
  
 # save the file so you can pull it up later if needed
-st_write(urban_scaled, "~/Desktop/Meso_Study/ch2_ebird_eastbay/data/urban_scaled.gpkg")
+st_write(urban_scaled, "~/Desktop/Meso_Study/ch2_ebird_eastbay/data/urban_scaled.gpkg", append = FALSE)
+# completed 05/01/2026
 
 # now we can load in the scaled urban block group
-urban_scaled <- st_read("~/Desktop/Meso_Study/ch2_ebird_eastbay/data/urban_scaled.gpkg")
+urban_scaled <- st_read("~/Desktop/Meso_Study/ch2_ebird_eastbay/Output/urban_scaled.gpkg")
+
+
+tmp_data = urban_scaled |> mutate(county_fips = substr(GEOID, 1,5),
+                                  tract_code = substr(GEOID, 6, 11)
+                                  )
+
+# now make sure that we save this dataset as a new file for the github and send to Diego
+st_write(tmp_data, "~/Desktop/Meso_Study/ch2_ebird_eastbay/data/covariate_tmp_data.gpkg", append = FALSE)
+
+# fleshing out the new model examples below, clean this up and make the model tables
+
+resident_model_tmp_tract_re <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2) + (1 | tract_code), data = tmp_data, family = nbinom2(link = "log"))
+summary(resident_model_tmp_tract_re)
+AIC(resident_model_tmp_tract_re)
+tab_model(resident_model_tmp_tract_re)
+
+resident_model_tmp_tract_re_w_NDVI_w_ALAN <- glmmTMB(cbg_resident_richness ~ traffic_volume + (ndvi * ALAN) +  medincome + precip + offset(log_checklist_km2) + (1 | tract_code), data = tmp_data, family = nbinom2(link = "log"))
+AIC(resident_model_tmp_tract_re_w_NDVI_w_ALAN)
+summary(resident_model_tmp_tract_re_w_NDVI_w_ALAN) # this is our best model
+tab_model(resident_model_tmp_tract_re_w_NDVI_w_ALAN)
+
+resident_model_no_re <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2) , data = tmp_data, family = nbinom2(link = "log"))
+summary(resident_model_no_re)
+AIC(resident_model_no_re)
+
+resident_model_tmp <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2) + (1 | county_fips), data = tmp_data, family = nbinom2(link = "log"))
+summary(resident_model_tmp)
+tab_model(resident_model_tmp)
 
 ### ALL MODEL FRAMEWORKS PRESENTED BELOW BUT ONLY CERTAIN MODELS USED IN FINAL RESULTS ###
 
@@ -1706,36 +1776,40 @@ urban_scaled <- st_read("~/Desktop/Meso_Study/ch2_ebird_eastbay/data/urban_scale
 # Model examples below for glmer, glm, and glm.nb:
 # perform the shapiro wilks test now to test the normal dist as quick example
 # shapiro.test(log(urban_scaled$mean_records)) # p-value < 0.05 so it is not normally distributed
- 
- # test the same model using the glm approach without the random effect
-# GLM1 <- glm(cbg_n_records ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + offset(log(area_km2)), family = poisson, data = omit_cleaned)
-# test for overdispersion looking at residual deviance / df > 1.2
-# (12817344 / 1477) # 8677.96, yes this is overdispersed
-
-NB1 <- glm.nb(cbg_n_records ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 
-+ offset(log_areakm2), data = urban_scaled)
-summary(NB1)
-anova(NB1)
-plot_model(NB1)
-sjPlot::tab_model(NB1)
 
  ## The luxury effect and bird biodiversity patterns ##
  # Response: Number of resident bird species
  # Predictors: Median income, housing density, rain, ALAN, and traffic volume
  # Model examples below, primary model is the glm.nb:
 # now make the same model using the negative binomial
-NB2 <- glm.nb(cbg_species_richness ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + offset(log_areakm2), data = urban_scaled)
-summary(NB2)
-tab_model(NB2)
-sjPlot::plot_model(NB2, type = "pred", colors = "blue3")
-
 # testing resident bird diversity with 2020-2025 dataset
 resident_model <- glmmTMB(cbg_resident_richness ~ traffic_volume + 
-ALAN + medincome + precip + offset(log_checklist_km2), 
+ALAN + medincome + precip + offset(log_areakm2), 
 data = urban_scaled, family = nbinom2(link = "log")) # nbinom2 is Negative Binomial
-summary(resident_model)
+summary(resident_model) # main model uses area_km2 as the offset, AIC = 10409.0
 tab_model(resident_model)
 sjPlot::plot_model(resident_model, type = "pred", colors = "blue3")
+
+resident_model2 <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2), data = urban_scaled, family = nbinom2(link = "log"))
+summary(resident_model2) # AIC = 10975.8
+# this model only uses offset log checklist density km2
+
+resident_model3 <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + medincome + precip + log_checklist_km2 + offset(log_areakm2), data = urban_scaled, family = nbinom2(link = "log"))
+summary(resident_model3) # AIC = 9581.5
+# this model uses log checklist as a predictor variable with area as offset
+
+resident_model4 <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + 
+medincome + precip + (1 | log_checklist_km2), data = urban_scaled, family = nbinom2(link = "log")) # this model contains the random effect element
+summary(resident_model4) # AIC = 9472.5
+
+resident_model5 <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + 
+medincome + precip + log_checklist_km2, data = urban_scaled, family = nbinom2(link = "log")) # this model contains the random effect element
+summary(resident_model5) # AIC = 8993.5
+
+# now we try to make a table to display the model result outputs
+tab_model(resident_model, resident_model2, resident_model3, resident_model4,
+          show.ci = FALSE, show.p = TRUE, show.aic = TRUE, show.est = TRUE,
+          dv.labels = c("log area offset model", "log checklist km2 offset model", "area offset + log checklist km2 as predictor var", "GEOID random effect + checklists offset"))
 
 # --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- #
  # looking at migratory species in response to urban/enviro variable
@@ -1745,47 +1819,42 @@ sjPlot::plot_model(resident_model, type = "pred", colors = "blue3")
 # Response variable: number of migratory species observed
 # Predictor variables: Standard as above ^^^
 # make model for the negative binomial version of this response variable
-NB3 <- glm.nb(cbg_migrant_species_richness ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + offset(log_areakm2), data = urban_scaled)
-summary(NB3)
-tab_model(NB3)
-sjPlot::plot_model(NB3, type = "pred", colors = "red4")
+migratory_model1 <- glmmTMB(cbg_migrant_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_areakm2), data = urban_scaled, family = nbinom2(link = "log"))
+summary(migratory_model1) # AIC = 12089.2
+tab_model(migratory_model1)
+sjPlot::plot_model(migratory_model1, type = "pred", colors = "red4")
 
-migratory_model <- glmmTMB(cbg_migrant_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2), data = urban_scaled, family = nbinom2(link = "log"))
-summary(migratory_model)
-tab_model(migratory_model)
-sjPlot::plot_model(migratory_model, type = "pred", colors = "red4")
+migratory_model2 <- glmmTMB(cbg_migrant_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2), data = urban_scaled, family = nbinom2(link = "log"))
+summary(migratory_model2) # AIC = 12811.7
+tab_model(migratory_model2)
+
+migratory_model3 <- glmmTMB(cbg_migrant_richness ~ traffic_volume + ALAN + medincome + precip + log_checklist_km2 + offset(log_areakm2), data = urban_scaled, family = nbinom2(link = "log"))
+summary(migratory_model3) # AIC = 10862.8
+tab_model(migratory_model3)
+
+migratory_model4 <- glmmTMB(cbg_migrant_richness ~ traffic_volume + ALAN + medincome + precip +
+(1 | GEOID) + offset(log(n_checklists)), data = urban_scaled, family = nbinom2(link = "log"))
+summary(migratory_model4) # AIC = 12033.3
+tab_model(migratory_model4)
+
+migratory_model_tmp_tract_re_w_NDVI_w_ALAN <- glmmTMB(cbg_migrant_richness ~ traffic_volume + (ndvi * ALAN) +  medincome + precip + offset(log_checklist_km2) + (1 | tract_code), data = tmp_data, family = nbinom2(link = "log"))
+
+# now we can try to make a table containing this information
+tab_model(migratory_model1, migratory_model2, migratory_model3, migratory_model4, show.ci = FALSE, show.p = TRUE, show.aic = TRUE,
+dv.labels = c("log area offset model", "log checklist km2 offset model", "area offset + log checklist km2 as predictor var", "GEOID random effect + checklists offset"))
+
 
 ## Analyzing the luxury effect and survey checklist dynamic ##
 # Response: The number of survey checklists performed
 # Predictors: Standard as above ^^^
 # Model:
 # now the glm negative binomial
-NB4 <- glm.nb(n_checklists ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + offset(log_areakm2), data = urban_scaled, link = log)
-summary(NB4)
-anova(NB4)
-r.squaredGLMM(NB4)
-sjPlot::plot_model(NB4, type = "pred", colors = "forestgreen")
-residuals.glm(NB4)
 
 # Checklist model with the 2020 - 2025 urban dataset
-checklist_model <- glmmTMB(cbg_n_checklists ~ housing_density + medincome + traffic_volume + temp + offset(log_checklist_km2), data = urban_scaled, family = nbinom2(link = "log"))
+checklist_model <- glmmTMB(n_checklists ~ housing_density + medincome + traffic_volume + temp + offset(log_areakm2), data = urban_scaled, family = nbinom2(link = "log"))
 summary(checklist_model)
 tab_model(checklist_model)
 plot_model(checklist_model, type = "pred", colors = "forestgreen")
-
-## The Luxury effect and bird biodiversity patterns ##
-# Response: Number of migratory bird records
-# Fixed effects: Standard covariates as listed above ^^^
-# Model:
-migrant_records <- glmer.nb(cbg_n_records_migrant ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + ndvi + offset(log(area_km2)) + (1 | OBJECTID), family = poisson, data = urban_scaled)
-summary(migrant_records)
-tab_model(migrant_records)
-plot_model(migrant_records, type = "diag")
-
-NB5 <- glm.nb(cbg_n_records_migrant ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + offset(log_areakm2), data = urban_scaled)
-summary(NB5)
-tab_model(NB5)
-sjPlot::plot_models(NB5)
   
  ## The luxury effect and migration biomass ##
  # Response: Mean Migration Density (Spring stopover data from 2016-2020)
@@ -1798,12 +1867,18 @@ sjPlot::plot_model(GLM6, type = "pred", colors = "orange")
 
 # Spring migration model with updated 2020-2025 dataset
 radar_stopover_model <- glm(spring_migration ~ medincome + traffic_volume + ALAN + precip + offset(log_areakm2), family = Gamma(link = "log"), data = urban_scaled)
-summary(radar_stopover_model)
+summary(radar_stopover_model) # AIC = 20538
 tab_model(radar_stopover_model)
 sjPlot::plot_model(radar_stopover_model, type = "pred", colors = "orange")
 
+radar_stopover_model2 <- glm(spring_migration ~ medincome + traffic_volume + ALAN + precip, family = Gamma(link = "log"), data = urban_scaled)
+summary(radar_stopover_model2) # AIC = 16667
+tab_model(radar_stopover_model2)
+sjPlot::plot_model(radar_stopover_model2, type = "pred", colors = "orange")
+
 summary(urban_scaled$spring_migration)
 summary(urban_scaled$log_checklist_km2)
+summary(urban_scaled$n_checklists)
 ```
 
 ## Fig Plots
@@ -1813,17 +1888,14 @@ summary(urban_scaled$log_checklist_km2)
 
 # 1. Put your models in a named list and organize vars along with colors
 model_list <- list(
-  "Resident Diversity" = NB2,
-  "Migrant Diversity" = NB3,
-  "eBird Checklists" = NB4,
-  "Migration Stopover" = GLM6)
+  "Resident Diversity" = resident_model,
+  "Migrant Diversity" = migratory_model,
+  "eBird Checklists" = checklist_model,
+  "Radar Stopover" = radar_stopover_model)
 
-predictors <- c("housing_density", "traffic_volume", "nightlights", "med_hh_income", "bio12")
+predictors <- c("housing_density", "traffic_volume", "ALAN", "medincome", "precip", "temp")
 
 quad_colors <- c("red3", "royalblue", "forestgreen", "purple3")
-
-# make an ouput folder for these plots
-output_folder <- file.path("~/Desktop/Meso_Study/ch2_ebird_eastbay/R_figures")
 
 # 2. Outer loop: Iterate through each predictor variable
   for(var in predictors) {
@@ -1870,23 +1942,33 @@ print(combined_plot) # quick preview of the plot output
  # now we create a table pulling the model information from these model results to see how they compare to each other #
 # first we list the models with their respective names
  model_list <- list(
-   "Resident Diversity" = NB2,
-   "Migrant Diversity" = NB3,
-   "eBird Checklists" = NB4,
-   "Migration Stopover" = GLM6)
+   "Resident Diversity" = resident_model,
+   "Migrant Diversity" = migratory_model,
+   "eBird Checklists" = checklist_model,
+   "Radar Stopover" = radar_stopover_model)
  
  # now we try to create a succint table using model summary
  ch2modeltable <- modelsummary::modelsummary(model_list,
                             fmt = 2,
-                            estimate = "{estimate}{stars}",
-                            statistic = "conf.int",
-                            metrics = c("AIC", "R2", "RMSE"),
+                            estimate = "{estimate} [{conf.low}, {conf.high}]",
+                            statistic = c("s.e. = {std.error}",
+                                          "z = {statistic}",
+                                          "p = {p.value}"),
+                            metrics = c("AIC","F","RMSE"),
                             coef_omit = "Intercept",
-                            stars = TRUE,
-                            output = "gt") # looks good! Now save this.
+                            stars = FALSE,
+                            output = "tinytable")
+ # looks good! Now save this.
+ 
+ # double check the table and make sure it looks fine
+ ch2modeltable
+ 
+ # save the tinytable file dataset into my github page
+ tinytable::save_tt(ch2modeltable, 
+output = "~/Desktop/Meso_Study/ch2_ebird_eastbay/R_tables/ch2modeltable.png", overwrite = TRUE)
  
  # visualize this really quick
- gt::gt_preview(ch2modeltable, top_n = 10)
+gt::gt_preview(ch2modeltable, top_n = 10)
  
 gt::gtsave(ch2modeltable, "~/Desktop/Meso_Study/ch2_ebird_eastbay/R_tables/ch2modeltable.png", expand = 10) # this looks great!
  
@@ -1894,12 +1976,13 @@ gt::gtsave(ch2modeltable, "~/Desktop/Meso_Study/ch2_ebird_eastbay/R_tables/ch2mo
 # first adjust the names of the variables
 cm <- c('housing_density' = 'Housing density',
         'traffic_volume' = 'Traffic volume',
-        'nightlights' = 'Nightlights',
-        'med_hh_income' = "Median income",
-        'bio12' = 'Rainfall')
+        'ALAN' = 'ALAN',
+        'medincome' = "Median income",
+        'precip' = 'Rainfall',
+        "temp" = "Temperature")
 
 # now we make the plot for the 95% coefficient plots, looks great!
-ch2coefplot <- modelplot(model_list, coef_map = cm, coef_omit = 'Interc') + 
+ch2coefplot <- modelsummary::modelplot(model_list, coef_map = cm, coef_omit = 'Interc') + 
   theme(axis.title = element_text(size = 14),
         axis.text = element_text(size = 12))
 print(ch2coefplot) # check the output of the plot
