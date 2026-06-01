@@ -1,0 +1,557 @@
+---
+title: "ch2chklstmodels"
+author: "Tyus D. Williams"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r checklist data models, echo = FALSE}
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+# Exploring models for survey data or checklists performed
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+#
+# Goal of this script:
+#   This script explores several statistical models for explaining variation in
+#   checklist performance across census block groups or similar spatial units.
+#
+# Response variable:
+#   cbg_n_checklists
+#
+# Main predictors:
+#   traffic_volume       = proxy for road traffic intensity
+#   ndvi                 = vegetation greenness / productivity
+#   ALAN                 = artificial light at night
+#   medincome            = median income
+#   precip               = precipitation
+#   temp                 = temperature
+#   log_checklist_km2    = eBird checklist density or sampling effort proxy
+#
+# Grouping variable:
+#   tract_code           = census tract identifier, used as a random effect
+#
+# Modeling approaches compared:
+#   1. Negative binomial GLMMs using glmmTMB
+#   2. Negative binomial GAMs using mgcv
+#   3. Alternative treatments of sampling effort:
+#        - offset
+#        - linear covariate
+#        - spline / smooth covariate
+# Avonet remove water birds?! -> And re-run the annotation?
+
+# glmmTMB is used for generalized linear mixed models,
+# including negative binomial models with random effects.
+library(pacman)
+library(glmmTMB)
+library(splines)
+library(mgcv)
+library(sjPlot)
+library(broom)
+library(dplyr)
+library(ggplot2)
+library(viridisLite)
+
+p_load(
+  "tidycensus",    # Census data access
+  "tidyverse",     # Core tidyverse packages: dplyr, ggplot2, readr, etc.
+  "dplyr",         # Data wrangling
+  "sf",            # Simple features spatial vector data
+  "ggplot2",       # Plotting
+  "terra",         # Raster and spatial data processing
+  "tidyterra",     # ggplot-compatible terra tools
+  "tibble",        # Modern data frames
+  "lme4",          # Mixed models; useful for comparison and related utilities
+  "raster",        # Raster data processing; older spatial raster package
+  "MuMIn",         # Model comparison / model selection utilities
+  "auk",           # eBird data filtering and processing
+  "here",          # Project-relative file paths
+  "exactextractr", # Fast raster extraction over polygons
+  "modelsummary",  # Model summary tables
+  "gtsummary",     # Publication-ready summary tables
+  "MASS",          # Statistical modeling utilities, including negative binomial tools
+  "sjPlot",        # Model plotting
+  "blackmarbler",  # Nighttime lights / Black Marble data tools
+  "data.table",    # Fast tabular data handling
+  "tigris",        # Census TIGER/Line spatial data
+  "glmmTMB",       # Negative binomial GLMMs
+  "flextable"      # Formatted tables, often for Word/HTML output
+)
+
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+# Prepare model data
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+
+tmp_data = st_read('/Desktop/Meso_Study/ch2_ebird_eastbay/data/covariate_tmp_data.gpkg')
+
+tmp_model_dat <- tmp_data %>%
+  st_drop_geometry() %>%
+  dplyr::select(
+    cbg_n_checklists,
+    traffic_volume,
+    ndvi,
+    ALAN,
+    medincome,
+    precip,
+    temp,
+    log_areakm2,
+    log_checklist_km2,
+    tract_code
+  ) %>%
+  mutate(
+    
+    # tract_code is used as a grouping variable for random effects.
+    # It should be categorical rather than numeric.
+    tract_code = as.factor(tract_code),
+    
+    # log_checklist_km2 is treated numerically, either as:
+    #   - an offset,
+    #   - a linear predictor,
+    #   - or a smooth / spline term.
+    log_checklist_km2 = as.numeric(log_checklist_km2),
+  
+  # include area_km2 as a numeric variable for either as
+  # - an offset
+  # - a linear predictor,
+  # or a smooth / spline term
+  log_areakm2 = as.numeric(log_areakm2)) %>% 
+  
+  # Remove rows with non-finite values in the model variables.
+  # This excludes NA, NaN, Inf, and -Inf values.
+  filter(
+    if_all(
+      c(
+        cbg_n_checklists,
+        traffic_volume,
+        ndvi,
+        ALAN,
+        medincome,
+        precip,
+        temp,
+        log_areakm2,
+        log_checklist_km2
+      ),
+      ~ is.finite(.)
+    ),
+    
+    # Also remove rows without a valid tract_code.
+    !is.na(tract_code)
+  )
+
+# Inspect the number of complete observations retained for modeling.
+nrow(tmp_model_dat)
+
+# Inspect the number of unique census tracts represented in the model data.
+# This matters because tract_code is used as a random effect.
+length(unique(tmp_model_dat$tract_code))
+
+
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+# Model selection
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+# Model 1: Negative binomial GLMM with checklist effort as an offset
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+#
+# This model treats log_checklist_km2 as an offset.
+#
+# Interpretation:
+#   An offset has its coefficient fixed at 1 on the link scale.
+#   Because the link is log, this assumes a proportional relationship between
+#   checklist density and expected richness.
+#
+# Substantive implication:
+#   This assumes sampling effort is an exposure-like quantity rather than a
+#   predictor whose effect is estimated from the data.
+#
+# Random effect:
+#   (1 | tract_code) allows the model intercept to vary by census tract,
+#   accounting for clustering or spatial/social similarity within tracts.
+
+# Checklist as offset, tract as random effect
+m_tmb_offset <- glmmTMB(
+    cbg_n_checklists ~
+    traffic_volume +
+    ndvi * ALAN +
+    medincome +
+    precip +
+    temp + 
+    offset(log_areakm2) +
+    (1 | tract_code),
+  data = tmp_model_dat,
+  family = nbinom2
+)
+
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+# Model 2: Negative binomial GLMM with checklist effort as a linear predictor
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+#
+# This model estimates the coefficient for log_checklist_km2 instead of fixing
+# it to 1 as an offset.
+#
+# Interpretation:
+#   The model can learn whether the relationship between checklist density and
+#   resident richness is weaker or stronger than the strict offset assumption.
+#
+# NOTE:
+#   The original comment says "random effect track"; this appears to mean
+#   "random effect tract."
+
+# Effort as predictor variable, random effect track
+m_tmb_effort_linear <- glmmTMB(
+  cbg_n_checklists ~
+    traffic_volume +
+    ndvi * ALAN +
+    medincome +
+    precip +
+    temp +
+    log_areakm2 +
+    (1 | tract_code),
+  data = tmp_model_dat,
+  family = nbinom2
+)
+
+
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+# Model 3: Negative binomial GLMM with checklist effort as a natural spline
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+#
+# This model allows a nonlinear relationship between checklist density and
+# resident richness using a natural spline with 3 degrees of freedom.
+#
+# ns(log_checklist_km2, df = 3):
+#   - Allows curvature in the effect of sampling effort.
+#   - Is less flexible than a GAM smooth, but more flexible than a linear term.
+#
+# This is useful if the relationship between sampling effort and observed
+# richness saturates at high effort.
+
+# Testing splines
+m_tmb_effort_spline <- glmmTMB(
+  cbg_n_checklists ~
+    traffic_volume +
+    ndvi * ALAN +
+    medincome +
+    precip +
+    temp +
+    ns(log_areakm2, df = 3) +
+    (1 | tract_code),
+  data = tmp_model_dat,
+  family = nbinom2
+)
+
+
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+# Model 4: Negative binomial GAM with smooth checklist effort
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+#
+# This model uses mgcv::gam() rather than glmmTMB.
+#
+# s(log_checklist_km2):
+#   Estimates a smooth, potentially nonlinear effect of checklist density.
+#
+# s(tract_code, bs = "re"):
+#   Represents tract-level random intercepts as a random-effect smooth.
+#
+# family = nb(link = "log"):
+#   Uses a negative binomial response distribution with a log link.
+#
+# method = "ML":
+#   Uses maximum likelihood estimation. This is often used when comparing GAMs
+#   by AIC, especially when fixed-effect structures differ.
+
+# GAM
+m_gam_effort_smooth <- gam(
+  cbg_n_checklists ~
+    traffic_volume + # if effect is zero model gives me coefficient close to zero, kinear term
+    ndvi * ALAN +
+    medincome +
+    precip +
+    temp +
+    s(log_areakm2, bs ='ts') + # if i dont add shrinking piece the effect cannot be zero, it will always be sometihng linear=
+    s(tract_code, bs = "re"),
+  data = tmp_model_dat,
+  family = nb,
+  method = "REML" # REML helps with overfitting
+)
+
+summary(m_gam_effort_smooth)
+gam.check(m_gam_effort_smooth)
+AIC(m_gam_effort_smooth)
+BIC(m_gam_effort_smooth)
+
+plot_model(
+  m_gam_effort_smooth,
+  type = "pred",
+  terms = "log_checklist_km2",
+  title = "Predicted resident richness with spline effort adjustment",
+  axis.title = c("Log checklist density", "Predicted resident richness")
+)
+
+
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+# Model 5: Negative binomial GAM with checklist effort as an offset
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+#
+# This is the GAM analogue of the glmmTMB offset model.
+#
+# It combines:
+#   - linear fixed effects,
+#   - an NDVI × ALAN interaction,
+#   - checklist density as an offset,
+#   - a tract-level random-effect smooth.
+
+# Gam with offset
+m_gam_offset <- gam(
+  cbg_n_checklists ~
+    traffic_volume +
+    ndvi * ALAN +
+    medincome +
+    precip +
+    offset(log_areakm2) +
+    s(tract_code, bs = "re"),
+  data = tmp_model_dat,
+  family = nb,
+  method = "REML"
+)
+
+
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+# Model 6: Negative binomial GAM with checklist effort as a linear predictor
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+#
+# This is the GAM analogue of the glmmTMB linear-effort model.
+#
+# It differs from m_gam_effort_smooth by treating log_checklist_km2 as a linear
+# predictor rather than as a smooth term.
+
+# Gam with linear effort
+m_gam_effort_linear <- gam(
+  cbg_n_checklists ~
+    traffic_volume +
+    ndvi * ALAN +
+    medincome +
+    precip +
+    log_areakm2  +
+    s(tract_code, bs = "re"),
+  data = tmp_model_dat,
+  family = nb,
+  method = "REML"
+)
+
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+# Model 7: Partially smoothed GAM with tensor interaction
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+#
+# This model keeps most predictors linear but adds a nonlinear interaction
+# between NDVI and ALAN using ti().
+#
+# ti(ndvi, ALAN, k = c(5, 5)):
+#   Estimates a tensor-product interaction between NDVI and ALAN.
+#   This allows the effect of one variable to vary nonlinearly with the other.
+#
+# Difference from ndvi * ALAN:
+#   ndvi * ALAN fits a linear-by-linear interaction.
+#   ti(ndvi, ALAN) allows a smoother, more flexible interaction surface.
+#
+# s(log_checklist_km2):
+#   Allows nonlinear sampling-effort adjustment.
+#
+# s(tract_code, bs = "re"):
+#   Accounts for tract-level clustering.
+
+m_gam_checklist_smooth <- gam(
+  spring_migration ~
+    traffic_volume +
+    s(ndvi, bs ='ts') + # because of TI is interaction smooth that is not the main effect
+    s(ALAN, bs ='ts') +
+    ti(ndvi, ALAN, bs ='ts') +
+    medincome +
+    precip +
+    temp+
+    s(log_areakm2) +
+    s(tract_code, bs = "re"),
+  data = tmp_model_dat,
+  family = nb(link = "log"),
+  method = "REML"
+)
+
+
+m_gam_full_smooth_all_v2 <- gam(
+  spring_migration ~
+    s(traffic_volume) +
+    s(ndvi, bs ='ts') + # because of TI is interaction smooth that is not the main effect
+    s(ALAN, bs ='ts') +
+    s(temp)+
+    ti(ndvi, ALAN, bs ='ts') +
+    s(medincome) +
+    s(precip) +
+    s(log_areakm2) +
+    s(tract_code, bs = "re"),
+  data = tmp_model_dat,
+  family = nb(link = "log"),
+  method = "REML"
+)
+
+# m_gam_full_smooth_all_v2 <- gam(
+#   cbg_resident_richness ~
+#     s(traffic_volume) +
+#     s(ndvi, bs ='ts') + # because of TI is interaction smooth that is not the main effect
+#     s(ALAN, bs ='ts') +
+#     s(temp)+
+#     ti(ndvi, ALAN, bs ='ts') +
+#     s(medincome) +
+#     s(precip) +
+#     s(log_checklist_km2) +
+#     s(tract_code, bs = "re"),
+#   data = tmp_model_dat,
+#   family = nb(link = "log"),
+#   method = "REML"
+# )
+
+# summary(m_gam_full_smooth_all)
+# AIC(m_gam_full_smooth_all)
+# summary(m_gam_full_smooth_all_v2)
+# AIC(m_gam_full_smooth_all_v2)
+
+plot_model(
+  m_gam_checklist_smooth,
+  type = "pred",
+  terms = "log_checklist_km2",
+  title = "Predicted resident richness across sampling effort",
+  axis.title = c("Log checklist density", "Predicted resident richness")
+)
+
+plot_model(
+  m_gam_full_smooth_all_v2,
+  type = "pred",
+  terms = "log_checklist_km2",
+  title = "Predicted resident richness across sampling effort",
+  axis.title = c("Log checklist density", "Predicted resident richness")
+)
+
+plot_model(
+  m_gam_checklist_smooth,
+  type = "pred",
+  terms = "ndvi",
+  title = "Predicted resident richness across sampling effort",
+  axis.title = c("NDVI", "Predicted resident richness")
+)
+
+
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+# Optional model diagnostics for m_gam_checklist_smooth
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+#
+# These lines are commented out in the original code.
+#
+# summary():
+#   Displays estimated coefficients, smooth terms, significance tests,
+#   estimated degrees of freedom, deviance explained, and other model details.
+#
+# gam.check():
+#   Checks basis dimensions, residual patterns, and other GAM diagnostics.
+#
+# AIC():
+#   Returns Akaike Information Criterion for model comparison.
+
+# summary(m_gam_checklist_smooth)
+# gam.check(m_gam_checklist_smooth)
+# AIC(m_gam_checklist_smooth)
+
+
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+# Assemble models into a named list for comparison
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+
+model_list <- list(
+  "TMB offset" = m_tmb_offset,
+  "TMB linear effort" = m_tmb_effort_linear,
+  "TMB spline effort" = m_tmb_effort_spline,
+  "GAM offset" = m_gam_offset,
+  "GAM linear effort" = m_gam_effort_linear,
+  "GAM smooth effort" = m_gam_effort_smooth
+)
+
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+# Compare models using likelihood-based criteria
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+#
+# For each model, extract:
+#   - model name
+#   - number of observations
+#   - effective degrees of freedom
+#   - log-likelihood
+#   - AIC
+#   - BIC
+#
+# Then compute:
+#   delta_AIC:
+#     Difference between each model's AIC and the lowest AIC in the set.
+#
+#   AIC_weight:
+#     Approximate relative support for each model among the candidate set.
+#
+# Important:
+#   AIC comparisons are most interpretable when models are fit to the same
+#   response variable, same data, and comparable likelihood frameworks.
+#   Comparing glmmTMB and mgcv models can be informative but should be done
+#   cautiously because the implementations and effective degrees of freedom
+#   may differ.
+
+model_compare <- purrr::map_dfr(
+  names(model_list),
+  function(nm) {
+    
+    # Retrieve the model object associated with the current model name.
+    m <- model_list[[nm]]
+    
+    # Store model-level comparison statistics in a tibble.
+    tibble(
+      model = nm,
+      nobs = nobs(m),
+      df = attr(logLik(m), "df"),
+      logLik = as.numeric(logLik(m)),
+      AIC = AIC(m),
+      BIC = BIC(m)
+    )
+  }
+) %>%
+  
+  # Sort models from best to worst according to AIC.
+  arrange(AIC) %>%
+  
+  # Compute AIC deltas and Akaike weights.
+  mutate(
+    delta_AIC = AIC - min(AIC),
+    AIC_weight = exp(-0.5 * delta_AIC) / sum(exp(-0.5 * delta_AIC))
+  )
+
+# Print the full model comparison table.
+model_compare
+
+# Create a formatted flextable version of the model comparison table.
+# Numeric columns are rounded for readability.
+model_compare %>%
+  mutate(
+    across(c(logLik, AIC, BIC, delta_AIC, AIC_weight), round, 3)
+  ) %>%
+  flextable()
+
+# Print a smaller model comparison table focused on AIC results.
+model_compare %>%
+  dplyr::select(model, AIC, delta_AIC, AIC_weight)
+
+# now grab a table for the data output to add in the supplemental section
+write.csv(model_compare, "~/Desktop/Meso_Study/ch2_ebird_eastbay/R_tables/checklist_data_models.csv", row.names = FALSE )
+```
+

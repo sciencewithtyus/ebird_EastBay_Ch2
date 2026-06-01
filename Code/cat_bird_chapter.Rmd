@@ -1737,7 +1737,7 @@ st_write(urban_scaled, "~/Desktop/Meso_Study/ch2_ebird_eastbay/data/urban_scaled
 # completed 05/01/2026
 
 # now we can load in the scaled urban block group
-urban_scaled <- st_read("~/Desktop/Meso_Study/ch2_ebird_eastbay/Output/urban_scaled.gpkg")
+urban_scaled <- st_read("~/Desktop/Meso_Study/ch2_ebird_eastbay/data/urban_scaled.gpkg")
 
 
 tmp_data = urban_scaled |> mutate(county_fips = substr(GEOID, 1,5),
@@ -1747,27 +1747,77 @@ tmp_data = urban_scaled |> mutate(county_fips = substr(GEOID, 1,5),
 # now make sure that we save this dataset as a new file for the github and send to Diego
 st_write(tmp_data, "~/Desktop/Meso_Study/ch2_ebird_eastbay/data/covariate_tmp_data.gpkg", append = FALSE)
 
+# load in the tmp_data and grab the variables of interest and grab the best models for chapter 2 #
+tmp_data = st_read('~/Desktop/Meso_Study/ch2_ebird_eastbay/data/covariate_tmp_data.gpkg') # need to clean this up because it is clunky
+
+tmp_model_dat <- tmp_data %>%
+  st_drop_geometry() %>%
+  dplyr::select(
+    cbg_resident_richness, cbg_migrant_richness, cbg_n_checklists, spring_migration, 
+    traffic_volume,
+    ndvi,
+    ALAN,
+    medincome,
+    precip,
+    temp,
+    log_areakm2,
+    log_checklist_km2,
+    tract_code
+  ) %>%
+  mutate(
+    
+    # tract_code is used as a grouping variable for random effects.
+    # It should be categorical rather than numeric.
+    tract_code = as.factor(tract_code),
+    
+    # log_checklist_km2 is treated numerically, either as:
+    #   - an offset,
+    #   - a linear predictor,
+    #   - or a smooth / spline term.
+    log_checklist_km2 = as.numeric(log_checklist_km2),
+    
+    # log_areakm2 is treated numerically, either as:
+    # - an offset,
+    # - a linear predictor,
+    # - or a smooth / spline term
+    log_areakm2 = as.numeric(log_areakm2)
+  ) %>%
+  
+  # Remove rows with non-finite values in the model variables.
+  # This excludes NA, NaN, Inf, and -Inf values.
+  filter(
+    if_all(
+      c(
+        cbg_resident_richness,
+        cbg_migrant_richness,
+        cbg_n_checklists,
+        spring_migration,
+        traffic_volume,
+        ndvi,
+        ALAN,
+        medincome,
+        precip,
+        temp,
+        log_areakm2,
+        log_checklist_km2
+      ),
+      ~ is.finite(.)
+    ),
+    
+    # Also remove rows without a valid tract_code.
+    !is.na(tract_code)
+  )
+
+# Inspect the number of complete observations retained for modeling.
+nrow(tmp_model_dat) # there are 1328 - 1323 obs
+
+# Inspect the number of unique census tracts represented in the model data.
+# This matters because tract_code is used as a random effect.
+length(unique(tmp_model_dat$tract_code))
+
 # fleshing out the new model examples below, clean this up and make the model tables
 
-resident_model_tmp_tract_re <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2) + (1 | tract_code), data = tmp_data, family = nbinom2(link = "log"))
-summary(resident_model_tmp_tract_re)
-AIC(resident_model_tmp_tract_re)
-tab_model(resident_model_tmp_tract_re)
-
-resident_model_tmp_tract_re_w_NDVI_w_ALAN <- glmmTMB(cbg_resident_richness ~ traffic_volume + (ndvi * ALAN) +  medincome + precip + offset(log_checklist_km2) + (1 | tract_code), data = tmp_data, family = nbinom2(link = "log"))
-AIC(resident_model_tmp_tract_re_w_NDVI_w_ALAN)
-summary(resident_model_tmp_tract_re_w_NDVI_w_ALAN) # this is our best model
-tab_model(resident_model_tmp_tract_re_w_NDVI_w_ALAN)
-
-resident_model_no_re <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2) , data = tmp_data, family = nbinom2(link = "log"))
-summary(resident_model_no_re)
-AIC(resident_model_no_re)
-
-resident_model_tmp <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2) + (1 | county_fips), data = tmp_data, family = nbinom2(link = "log"))
-summary(resident_model_tmp)
-tab_model(resident_model_tmp)
-
-### ALL MODEL FRAMEWORKS PRESENTED BELOW BUT ONLY CERTAIN MODELS USED IN FINAL RESULTS ###
+### SELECTING AND DISPLAYING THE BEST MODELS FROM KNITTED R MARKDOWNS ###
 
 #### Testing the Hypotheses w/ Models #### Updated: 11/07/25
 # The luxury effect of digital data #
@@ -1783,28 +1833,41 @@ tab_model(resident_model_tmp)
  # Model examples below, primary model is the glm.nb:
 # now make the same model using the negative binomial
 # testing resident bird diversity with 2020-2025 dataset
-resident_model <- glmmTMB(cbg_resident_richness ~ traffic_volume + 
+resident_model_area_offset <- glmmTMB(cbg_resident_richness ~ traffic_volume + 
 ALAN + medincome + precip + offset(log_areakm2), 
 data = urban_scaled, family = nbinom2(link = "log")) # nbinom2 is Negative Binomial
 summary(resident_model) # main model uses area_km2 as the offset, AIC = 10409.0
 tab_model(resident_model)
 sjPlot::plot_model(resident_model, type = "pred", colors = "blue3")
 
-resident_model2 <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2), data = urban_scaled, family = nbinom2(link = "log"))
+resident_model_chklst_ofst <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2), data = urban_scaled, family = nbinom2(link = "log"))
 summary(resident_model2) # AIC = 10975.8
 # this model only uses offset log checklist density km2
 
-resident_model3 <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + medincome + precip + log_checklist_km2 + offset(log_areakm2), data = urban_scaled, family = nbinom2(link = "log"))
-summary(resident_model3) # AIC = 9581.5
-# this model uses log checklist as a predictor variable with area as offset
+resident_model_tmp_tract_re <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2) + (1 | tract_code), data = tmp_data, family = nbinom2(link = "log"))
+summary(resident_model_tmp_tract_re)
+AIC(resident_model_tmp_tract_re)
+tab_model(resident_model_tmp_tract_re)
 
-resident_model4 <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + 
-medincome + precip + (1 | log_checklist_km2), data = urban_scaled, family = nbinom2(link = "log")) # this model contains the random effect element
-summary(resident_model4) # AIC = 9472.5
+resident_model_tmp_tract_re_w_NDVI_w_ALAN <- glmmTMB(cbg_resident_richness ~ traffic_volume + (ndvi * ALAN) +  medincome + precip + offset(log_checklist_km2) + (1 | tract_code), data = tmp_data, family = nbinom2(link = "log"))
+summary(resident_model_tmp_tract_re_w_NDVI_w_ALAN) # this is our best model
+AIC(resident_model_tmp_tract_re_w_NDVI_w_ALAN)
+tab_model(resident_model_tmp_tract_re_w_NDVI_w_ALAN)
 
-resident_model5 <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + 
-medincome + precip + log_checklist_km2, data = urban_scaled, family = nbinom2(link = "log")) # this model contains the random effect element
-summary(resident_model5) # AIC = 8993.5
+# implementing the best resident model for the final table
+resident_gam_effort_smooth <- gam(
+  cbg_resident_richness ~
+    traffic_volume + # if effect is zero model gives me coefficient close to zero, kinear term
+    ndvi * ALAN +
+    medincome +
+    precip +
+    temp +
+    s(log_checklist_km2, bs ='ts') + # if i dont add shrinking piece the effect cannot be zero, it will allways be sometihng linear=
+    s(tract_code, bs = "re"),
+  data = tmp_model_dat,
+  family = nb(link = "log"),
+  method = "REML"
+  ) # REML helps with overfitting
 
 # now we try to make a table to display the model result outputs
 tab_model(resident_model, resident_model2, resident_model3, resident_model4,
@@ -1819,30 +1882,40 @@ tab_model(resident_model, resident_model2, resident_model3, resident_model4,
 # Response variable: number of migratory species observed
 # Predictor variables: Standard as above ^^^
 # make model for the negative binomial version of this response variable
-migratory_model1 <- glmmTMB(cbg_migrant_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_areakm2), data = urban_scaled, family = nbinom2(link = "log"))
-summary(migratory_model1) # AIC = 12089.2
-tab_model(migratory_model1)
-sjPlot::plot_model(migratory_model1, type = "pred", colors = "red4")
+migratory_model_area_ofst <- glmmTMB(cbg_migrant_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_areakm2), data = urban_scaled, family = nbinom2(link = "log"))
+summary(migratory_model_area_ofst) # AIC = 12089.2
+tab_model(migratory_model_area_ofst)
+sjPlot::plot_model(migratory_model_area_ofst, type = "pred", colors = "red4")
 
-migratory_model2 <- glmmTMB(cbg_migrant_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2), data = urban_scaled, family = nbinom2(link = "log"))
-summary(migratory_model2) # AIC = 12811.7
-tab_model(migratory_model2)
+migratory_model_chklst_ofst <- glmmTMB(cbg_migrant_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2), data = urban_scaled, family = nbinom2(link = "log"))
+summary(migratory_model_chklst_ofst) # AIC = 12811.7
+tab_model(migratory_model_chklst_ofst)
 
-migratory_model3 <- glmmTMB(cbg_migrant_richness ~ traffic_volume + ALAN + medincome + precip + log_checklist_km2 + offset(log_areakm2), data = urban_scaled, family = nbinom2(link = "log"))
-summary(migratory_model3) # AIC = 10862.8
-tab_model(migratory_model3)
-
-migratory_model4 <- glmmTMB(cbg_migrant_richness ~ traffic_volume + ALAN + medincome + precip +
-(1 | GEOID) + offset(log(n_checklists)), data = urban_scaled, family = nbinom2(link = "log"))
-summary(migratory_model4) # AIC = 12033.3
-tab_model(migratory_model4)
+migratory_model_tmp_tract_re <- glmmTMB(cbg_migrant_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2) + (1 | tract_code), data = tmp_data, family = nbinom2(link = "log"))
+summary(migratory_model_tmp_tract_re) # AIC = 12378.0
+tab_model(migratory_model_tmp_tract_re)
 
 migratory_model_tmp_tract_re_w_NDVI_w_ALAN <- glmmTMB(cbg_migrant_richness ~ traffic_volume + (ndvi * ALAN) +  medincome + precip + offset(log_checklist_km2) + (1 | tract_code), data = tmp_data, family = nbinom2(link = "log"))
+summary(migratory_model_tmp_tract_re_w_NDVI_w_ALAN) # AIC = 12136.7
+
+# implementing the best migratory bird models
+migrant_gam_effort_smooth <- gam(
+  cbg_migrant_richness ~
+    traffic_volume + # if effect is zero model gives me coefficient close to zero, kinear term
+    ndvi * ALAN +
+    medincome +
+    precip +
+    temp +
+    s(log_checklist_km2, bs ='ts') + # if i dont add shrinking piece the effect cannot be zero, it will allways be sometihng linear=
+    s(tract_code, bs = "re"),
+  data = tmp_model_dat,
+  family = nb(link = "log"),
+  method = "REML" 
+  ) # REML helps with overfitting
 
 # now we can try to make a table containing this information
 tab_model(migratory_model1, migratory_model2, migratory_model3, migratory_model4, show.ci = FALSE, show.p = TRUE, show.aic = TRUE,
 dv.labels = c("log area offset model", "log checklist km2 offset model", "area offset + log checklist km2 as predictor var", "GEOID random effect + checklists offset"))
-
 
 ## Analyzing the luxury effect and survey checklist dynamic ##
 # Response: The number of survey checklists performed
@@ -1852,19 +1925,42 @@ dv.labels = c("log area offset model", "log checklist km2 offset model", "area o
 
 # Checklist model with the 2020 - 2025 urban dataset
 checklist_model <- glmmTMB(n_checklists ~ housing_density + medincome + traffic_volume + temp + offset(log_areakm2), data = urban_scaled, family = nbinom2(link = "log"))
-summary(checklist_model)
+summary(checklist_model) # AIC = 13298.1
 tab_model(checklist_model)
 plot_model(checklist_model, type = "pred", colors = "forestgreen")
+
+checklist_model2 <- glmmTMB(n_checklists ~ housing_density + medincome + traffic_volume + temp, data = urban_scaled, family = nbinom2(link = "log"))
+summary(checklist_model2) # AIC = 13567.1
+tab_model(checklist_model2)
+
+checklist_model3 <- glmmTMB(n_checklists ~ housing_density + medincome + traffic_volume + temp + offset(log_areakm2) + (1 | tract_code), data = tmp_data, family = nbinom2(link = "log"))
+summary(checklist_model3) # AIC = 12840.6
+tab_model(checklist_model3)
+
+checklist_model4 <- glmmTMB(n_checklists ~ housing_density + medincome + traffic_volume + temp +
+(1 | tract_code), data = tmp_data, family = nbinom2(link = "log"))
+summary(checklist_model4) # AIC = 13107.4
+tab_model(checklist_model4)
+
+# selecting the best checklist model to go into the table
+checklist_gam_effort_smooth <- gam(
+  cbg_n_checklists ~
+    traffic_volume + # if effect is zero model gives me coefficient close to zero, kinear term
+    ndvi * ALAN +
+    medincome +
+    precip +
+    temp +
+    s(log_areakm2, bs ='ts') + # if i dont add shrinking piece the effect cannot be zero, it will allways be sometihng linear=
+    s(tract_code, bs = "re"),
+  data = tmp_model_dat,
+  family = nb,
+  method = "REML" # REML helps with overfitting
+)
   
  ## The luxury effect and migration biomass ##
  # Response: Mean Migration Density (Spring stopover data from 2016-2020)
  # Predictors: nightlights, noise pollution, rain, income, housing density
  # model:
- GLM6 <- glm(spring_migration ~ housing_density + traffic_volume + nightlights + med_hh_income + bio12 + offset(log_areakm2), family = Gamma(link = 'log'), data = urban_scaled)
-summary(GLM6)
-tab_model(GLM6)
-sjPlot::plot_model(GLM6, type = "pred", colors = "orange")
-
 # Spring migration model with updated 2020-2025 dataset
 radar_stopover_model <- glm(spring_migration ~ medincome + traffic_volume + ALAN + precip + offset(log_areakm2), family = Gamma(link = "log"), data = urban_scaled)
 summary(radar_stopover_model) # AIC = 20538
@@ -1876,9 +1972,60 @@ summary(radar_stopover_model2) # AIC = 16667
 tab_model(radar_stopover_model2)
 sjPlot::plot_model(radar_stopover_model2, type = "pred", colors = "orange")
 
-summary(urban_scaled$spring_migration)
-summary(urban_scaled$log_checklist_km2)
-summary(urban_scaled$n_checklists)
+radar_stopover_model3 <- glm(spring_migration ~ medincome + traffic_volume + (ALAN * ndvi) + precip, family = Gamma(link = "log"), data = urban_scaled)
+summary(radar_stopover_model3) # AIC = 16199
+tab_model(radar_stopover_model3)
+sjPlot::plot_model(radar_stopover_model3, type = "pred", colors = "orange")
+
+radar_stopover_model4 <- glm(spring_migration ~ medincome + traffic_volume + (ALAN * ndvi) + offset(log_areakm2), family = Gamma(link = "log"), data = urban_scaled)
+summary(radar_stopover_model4) # AIC = 20105
+tab_model(radar_stopover_model4)
+sjPlot::plot_model(radar_stopover_model4, type = "pred", colors = "orange")
+
+# selecting the best radar migration model for the final table
+radar_gam_effort_smooth <- gam(
+  spring_migration ~
+    traffic_volume + # if effect is zero model gives me coefficient close to zero, kinear term
+    ndvi * ALAN +
+    medincome +
+    precip +
+    temp +
+    s(log_areakm2, bs ='ts') + # if i dont add shrinking piece the effect cannot be zero, it will allways be sometihng linear=
+    s(tract_code, bs = "re"),
+  data = tmp_model_dat,
+  family = Gamma(link = "log"),
+  method = "REML" # REML helps with over fitting
+)
+
+### Making a table for the best selected model outputs ###
+best_model_list <- list("Resident Model" = resident_gam_effort_smooth,
+    "Migrant Model" = migrant_gam_effort_smooth,
+    "Checklist Model" = checklist_gam_effort_smooth,
+    "Radar Model" = radar_gam_effort_smooth
+   )
+ 
+# Export this directly to the csv format
+# modelsummary(best_model_list, output = "~/Desktop/Meso_Study/ch2_ebird_eastbay/R_tables/best_model_table.csv")
+ 
+ # now we try to create a succinct table using model summary
+ bestmodeltable <- modelsummary::modelsummary(best_model_list,
+                            fmt = 2,
+                            estimate = "{estimate} [{conf.low}, {conf.high}]",
+                            statistic = c("s.e. = {std.error}",
+                                          "z = {statistic}",
+                                          "p = {p.value}"),
+                            metrics = c("AIC", "RMSE"),
+                            coef_omit = "Intercept",
+                            stars = FALSE,
+                            output = "tinytable") # check the visual
+
+ # double check the table and make sure it looks fine
+ bestmodeltable # looks good to me
+ 
+ # save the tinytable file dataset into my github page, this works
+ tinytable::save_tt(bestmodeltable, 
+output = "~/Desktop/Meso_Study/ch2_ebird_eastbay/R_tables/bestmodeltable.png", overwrite = TRUE)
+
 ```
 
 ## Fig Plots

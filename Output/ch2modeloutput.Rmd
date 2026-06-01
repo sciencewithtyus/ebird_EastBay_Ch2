@@ -1,0 +1,200 @@
+---
+title: "Output for all models"
+author: "Tyus D. Williams"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Code Output
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r model outputs, echo = TRUE}
+### ALL MODEL FRAMEWORKS PRESENTED BELOW BUT ONLY CERTAIN MODELS USED IN FINAL RESULTS ###
+
+library(pacman)
+
+# now select the packages I want in my workspace
+p_load("tidycensus","tidyverse","dplyr","sf","ggplot2", "terra", "tidyterra", "tibble", "lme4", "raster", "MuMIn", "auk", "here", "exactextractr", "modelsummary", "gtsummary", "MASS", "sjPlot", "blackmarbler", "data.table", "tigris", "glmmTMB", "flextable")
+
+# load in the needed datasets for the models so the knit works
+urban_scaled <- st_read("~/Desktop/Meso_Study/ch2_ebird_eastbay/data/urban_scaled.gpkg")
+
+tmp_data <- st_read("~/Desktop/Meso_Study/ch2_ebird_eastbay/data/covariate_tmp_data.gpkg")
+
+ ## The luxury effect and bird biodiversity patterns ##
+ # Response: Number of resident bird species
+ # Predictors: Median income, housing density, rain, ALAN, and traffic volume
+ # Model examples below, primary model is the glm.nb:
+# now make the same model using the negative binomial
+# testing resident bird diversity with 2020-2025 dataset
+resident_model_area_offset <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_areakm2), 
+data = urban_scaled, family = nbinom2) # nbinom2 is Negative Binomial
+summary(resident_model_area_offset) # main model uses area_km2 as the offset, AIC = 10409.0
+tab_model(resident_model_area_offset)
+sjPlot::plot_model(resident_model_area_offset, type = "pred", colors = "blue3")
+
+resident_model_chklst_ofst <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2), data = urban_scaled, family = nbinom2)
+summary(resident_model_chklst_ofst) # AIC = 10975.8
+# this model only uses offset log checklist density km2
+
+resident_model_tmp_tract_re <- glmmTMB(cbg_resident_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2) + (1 | tract_code), data = tmp_data, family = nbinom2)
+summary(resident_model_tmp_tract_re)
+AIC(resident_model_tmp_tract_re)
+tab_model(resident_model_tmp_tract_re)
+
+resident_model_tmp_tract_re_w_NDVI_w_ALAN <- glmmTMB(cbg_resident_richness ~ traffic_volume + (ndvi * ALAN) +  medincome + precip + offset(log_checklist_km2) + (1 | tract_code), data = tmp_data, family = nbinom2)
+summary(resident_model_tmp_tract_re_w_NDVI_w_ALAN) # this is our best model
+AIC(resident_model_tmp_tract_re_w_NDVI_w_ALAN)
+tab_model(resident_model_tmp_tract_re_w_NDVI_w_ALAN)
+
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- #
+ # looking at migratory species in response to urban/enviro variable
+ # how are migratory species responding to urban environments?
+ # --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- #
+ # migratory birds in response to urban environments and their composition
+# Response variable: number of migratory species observed
+# Predictor variables: Standard as above ^^^
+# make model for the negative binomial version of this response variable
+migratory_model_area_ofst <- glmmTMB(cbg_migrant_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_areakm2), data = urban_scaled, family = nbinom2)
+summary(migratory_model_area_ofst) # AIC = 12089.2
+tab_model(migratory_model_area_ofst)
+sjPlot::plot_model(migratory_model_area_ofst, type = "pred", colors = "red4")
+
+migratory_model_chklst_ofst <- glmmTMB(cbg_migrant_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2), data = urban_scaled, family = nbinom2)
+summary(migratory_model_chklst_ofst) # AIC = 12811.7
+tab_model(migratory_model_chklst_ofst)
+
+migratory_model_tmp_tract_re <- glmmTMB(cbg_migrant_richness ~ traffic_volume + ALAN + medincome + precip + offset(log_checklist_km2) + (1 | tract_code), data = tmp_data, family = nbinom2)
+summary(migratory_model_tmp_tract_re) # AIC = 12378.0
+tab_model(migratory_model_tmp_tract_re)
+
+migratory_model_tmp_tract_re_w_NDVI_w_ALAN <- glmmTMB(cbg_migrant_richness ~ traffic_volume + (ndvi * ALAN) +  medincome + precip + offset(log_checklist_km2) + (1 | tract_code), data = tmp_data, family = nbinom2)
+summary(migratory_model_tmp_tract_re_w_NDVI_w_ALAN) # AIC = 12136.7
+
+### Making Table for Ecological Model Outputs ###
+# create list for the ecological models and grab the summary stats of interest
+
+eco_models <- list(resident_model_area_offset, resident_model_chklst_ofst, "resident_model_chklst_tract_re" = resident_model_tmp_tract_re, "resident_model_chklst_trat_re_ndvi_alan" = resident_model_tmp_tract_re_w_NDVI_w_ALAN, migratory_model_area_ofst, migratory_model_chklst_ofst, "migratory_model_chklst_tract_re" = migratory_model_tmp_tract_re, "migratory_model_chklst_tract_re_ndvi_alan" = migratory_model_tmp_tract_re_w_NDVI_w_ALAN) # grab all the models so we can pull the info we need
+
+# first we list the models with their respective names
+ eco_model_list <- list(
+   "Migratory Model 1" = migratory_model_area_ofst,
+   "Migratory Model 2" = migratory_model_chklst_ofst,
+   "Migratory Model 3" = migratory_model_tmp_tract_re,
+   "Migratory Model 4" = migratory_model_tmp_tract_re_w_NDVI_w_ALAN,
+   "Resident Model 1" = resident_model_area_offset,
+   "Resident Model 2" = resident_model_chklst_ofst,
+   "Resident Model 3" = resident_model_tmp_tract_re,
+   "Resident Model 4" = resident_model_tmp_tract_re_w_NDVI_w_ALAN)
+ 
+# Export this directly to the csv format
+# modelsummary(eco_model_list, output = "~/Desktop/Meso_Study/ch2_ebird_eastbay/R_tables/eco_model_table.csv")
+ 
+ # now we try to create a succint table using model summary
+ ecomodeltable <- modelsummary::modelsummary(eco_model_list,
+                            fmt = 2,
+                            estimate = "{estimate} [{conf.low}, {conf.high}]",
+                            statistic = c("s.e. = {std.error}",
+                                          "z = {statistic}",
+                                          "p = {p.value}"),
+                            metrics = c("AIC","F","RMSE"),
+                            coef_omit = "Intercept",
+                            stars = FALSE,
+                            output = "tinytable")
+ # looks good! Now save this.
+ 
+ # double check the table and make sure it looks fine
+ print(ecomodeltable) # looks good to me
+ 
+ # make sure the Latex installation is in the system
+
+## Analyzing the luxury effect and survey checklist dynamic ##
+# Response: The number of survey checklists performed
+# Predictors: Standard as above ^^^
+# Model:
+# now the glm negative binomial
+
+# Checklist model with the 2020 - 2025 urban dataset
+checklist_model <- glmmTMB(n_checklists ~ housing_density + medincome + traffic_volume + temp + offset(log_areakm2), data = urban_scaled, family = nbinom2)
+summary(checklist_model) # AIC = 13298.1
+tab_model(checklist_model)
+plot_model(checklist_model, type = "pred", colors = "forestgreen")
+
+checklist_model2 <- glmmTMB(n_checklists ~ housing_density + medincome + traffic_volume + temp, data = urban_scaled, family = nbinom2)
+summary(checklist_model2) # AIC = 13567.1
+tab_model(checklist_model2)
+
+checklist_model3 <- glmmTMB(n_checklists ~ housing_density + medincome + traffic_volume + temp + offset(log_areakm2) + (1 | tract_code), data = tmp_data, family = nbinom2)
+summary(checklist_model3) # AIC = 12840.6
+tab_model(checklist_model3)
+
+checklist_model4 <- glmmTMB(n_checklists ~ housing_density + medincome + traffic_volume + temp +
+(1 | tract_code), data = tmp_data, family = nbinom2)
+summary(checklist_model4) # AIC = 13107.4
+tab_model(checklist_model4)
+  
+ ## The luxury effect and migration biomass ##
+ # Response: Mean Migration Density (Spring stopover data from 2016-2020)
+ # Predictors: nightlights, noise pollution, rain, income, housing density
+ # model:
+# Spring migration model with updated 2020-2025 dataset
+radar_stopover_model <- glm(spring_migration ~ medincome + traffic_volume + ALAN + precip + offset(log_areakm2), family = Gamma(link = "log"), data = urban_scaled)
+summary(radar_stopover_model) # AIC = 20538
+tab_model(radar_stopover_model)
+sjPlot::plot_model(radar_stopover_model, type = "pred", colors = "orange")
+
+radar_stopover_model2 <- glm(spring_migration ~ medincome + traffic_volume + ALAN + precip, family = Gamma(link = "log"), data = urban_scaled)
+summary(radar_stopover_model2) # AIC = 16667
+tab_model(radar_stopover_model2)
+sjPlot::plot_model(radar_stopover_model2, type = "pred", colors = "orange")
+
+radar_stopover_model3 <- glm(spring_migration ~ medincome + traffic_volume + (ALAN * ndvi) + precip, family = Gamma(link = "log"), data = urban_scaled)
+summary(radar_stopover_model3) # AIC = 16199
+tab_model(radar_stopover_model3)
+sjPlot::plot_model(radar_stopover_model3, type = "pred", colors = "orange")
+
+radar_stopover_model4 <- glm(spring_migration ~ medincome + traffic_volume + (ALAN * ndvi) + offset(log_areakm2), family = Gamma(link = "log"), data = urban_scaled)
+summary(radar_stopover_model4) # AIC = 20105
+tab_model(radar_stopover_model4)
+sjPlot::plot_model(radar_stopover_model4, type = "pred", colors = "orange")
+
+### Making a table for the methodological model outputs ###
+method_model_list <- list(
+   "Checklist Model 1" = checklist_model,
+   "Checklist Model 2" = checklist_model2,
+   "Checklist Model 3" = checklist_model3,
+   "Checklist Model 4" = checklist_model4,
+   "Radar Model 1" = radar_stopover_model,
+   "Radar Model 2" = radar_stopover_model2,
+   "Radar Model 3" = radar_stopover_model3,
+   "Radar Model 4" = radar_stopover_model4)
+ 
+# Export this directly to the csv format
+# modelsummary(eco_model_list, output = "~/Desktop/Meso_Study/ch2_ebird_eastbay/R_tables/eco_model_table.csv")
+ 
+ # now we try to create a succint table using model summary
+ methodmodeltable <- modelsummary::modelsummary(method_model_list,
+                            fmt = 2,
+                            estimate = "{estimate} [{conf.low}, {conf.high}]",
+                            statistic = c("s.e. = {std.error}",
+                                          "z = {statistic}",
+                                          "p = {p.value}"),
+                            metrics = c("AIC", "RMSE"),
+                            coef_omit = "Intercept",
+                            stars = FALSE,
+                            output = "tinytable")
+ # looks good! Now save this.
+ 
+ # double check the table and make sure it looks fine
+ methodmodeltable # looks good to me
+
+```
